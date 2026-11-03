@@ -1,6 +1,6 @@
 # Documentation
 
-This public source snapshot intentionally excludes internal Human screenshots, private pilot evidence, and operator release reports. Source revision: `aabf6445ce289755a64bb86e1fdd6d9f35ee71fa`.
+This public source snapshot intentionally excludes internal Human screenshots, private pilot evidence, and operator release reports. Source revision: `33d5f09828ad8b1c4e0c325ec25f4a475bf46a55`.
 
 - [Architecture overview](architecture/overview.md)
 - [DDD domain model](architecture/domain-model.md)

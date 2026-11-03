@@ -17,7 +17,10 @@ import phase7_verify  # noqa: E402
 
 class PilotSchemaTests(unittest.TestCase):
     def test_unique_tasks_and_case_mapping(self):
-        data = json.loads((ROOT / "docs/pilot/phase7-seed.json").read_text(encoding="utf-8"))
+        seed = ROOT / "docs/pilot/phase7-seed.json"
+        if not seed.is_file():
+            self.skipTest("private pilot seed intentionally omitted from public source snapshot")
+        data = json.loads(seed.read_text(encoding="utf-8"))
         self.assertEqual(data["schema_version"], 1)
         self.assertEqual(data["project_key"], "QUAL")
         self.assertEqual(len(data["tasks"]), 6)

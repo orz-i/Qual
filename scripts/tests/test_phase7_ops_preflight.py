@@ -74,6 +74,8 @@ class OperationalPreflightTests(unittest.TestCase):
                 "试点者是否确认该反馈为真实操作记录")
         self.assertTrue(ops.feedback_template_ready(text))
         self.assertFalse(ops.feedback_template_ready("复现步骤\n建议"))
+        if not ops.FEEDBACK_TEMPLATE.is_file():
+            self.skipTest("private Human feedback template intentionally omitted from public source snapshot")
         self.assertTrue(ops.feedback_template_ready(
             ops.FEEDBACK_TEMPLATE.read_text(encoding="utf-8")
         ))

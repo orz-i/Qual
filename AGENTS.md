@@ -16,4 +16,4 @@ Do not commit `.env`, runtime secrets, personal screenshots, internal pilot repo
 
 See the top-level README and `docs/decisions/` for architecture boundaries. The public GitHub repository is a code collaboration surface, **not** Qual's project-state or credential store.
 
-Source snapshot: `aabf6445ce289755a64bb86e1fdd6d9f35ee71fa`.
+Source snapshot: `33d5f09828ad8b1c4e0c325ec25f4a475bf46a55`.

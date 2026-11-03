@@ -2,7 +2,7 @@
 
 Qual is a Go + React project for collaborative task, defect, test, review, and verifiable-evidence management by people and **externally operated** AI agents.
 
-This repository is a **screened public source snapshot** of local source commit `aabf6445ce289755a64bb86e1fdd6d9f35ee71fa`. To protect private pilot participants and operator records, the public branch intentionally contains **no internal Git ancestors, Human browser screenshots, or private pilot/audit reports**. The canonical locally deployed Qual instance is separate from this source mirror; a GitHub check or PR does not deploy a service or approve a WorkItem.
+This repository is a **screened public source snapshot** of local source commit `33d5f09828ad8b1c4e0c325ec25f4a475bf46a55`. To protect private pilot participants and operator records, the public branch intentionally contains **no internal Git ancestors, Human browser screenshots, or private pilot/audit reports**. The canonical locally deployed Qual instance is separate from this source mirror; a GitHub check or PR does not deploy a service or approve a WorkItem.
 
 ## Project boundaries
 
