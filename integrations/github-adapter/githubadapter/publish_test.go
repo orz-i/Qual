@@ -115,6 +115,12 @@ func TestPublishMappingAuthThenExactIdempotentDelivery(t *testing.T) {
 		t.Fatal("denied Event was discarded or overwritten")
 	}
 	code.Store(201)
+	if blocked, err := publisher.PublishOnce(context.Background()); err != nil || blocked.Attempted != 0 || blocked.Skipped != 1 {
+		t.Fatalf("revoked/denied credential automatically retried after 403: %+v %v", blocked, err)
+	}
+	if err := spool.RequeueAfterReview(fixtureDeliveryID); err != nil {
+		t.Fatal(err)
+	}
 	passed, err := publisher.PublishOnce(context.Background())
 	if err != nil || passed.Delivered != 1 || passed.Attempted != 1 {
 		t.Fatalf("authorized event not delivered: %+v %v", passed, err)

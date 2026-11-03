@@ -96,11 +96,20 @@ func TestAuth401AndMapping404RemainDurable(t *testing.T) {
 				jobs[0].DeliveryID != job.DeliveryID || jobs[0].LastHTTPStatus != tc.status {
 				t.Fatalf("negative result lost across restart: %v %v", jobs, err)
 			}
+			if next, err := p.PublishOnce(context.Background()); err != nil || next.Attempted != 0 || next.Skipped != 1 {
+				t.Fatalf("known auth/link error automatically retried without human remediation: %v %v", next, err)
+			}
+			if requests.Load() != 1 {
+				t.Fatal("unexpected unauthorized retry")
+			}
+			if err := fresh.RequeueAfterReview(job.DeliveryID); err != nil {
+				t.Fatalf("manual remediation could not requeue: %v", err)
+			}
 			if next, err := p.PublishOnce(context.Background()); err != nil || next.Attempted != 1 {
-				t.Fatalf("human-remediable denial was silently dropped: %v %v", next, err)
+				t.Fatalf("explicitly remediated retry not executed: %v %v", next, err)
 			}
 			if requests.Load() != 2 {
-				t.Fatal("unexpected post count")
+				t.Fatal("manual retry missing")
 			}
 		})
 	}

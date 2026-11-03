@@ -226,8 +226,19 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if status, _, _ := request(t, "POST", f.url(f.project)+"/"+workID+"/claim", f.reporter, "qual36-integration-cannot-claim", "", map[string]any{"expected_version": 2}); status != 403 {
 		t.Fatalf("Event-only Integration falsely claims a WorkItem: HTTP%d", status)
 	}
+	// Changing authorization is not itself permission for automatic retry.
+	// Only an explicitly reviewed local operator action may requeue an
+	// authenticated delivery previously denied by the real Goose17 service.
+	if stats := doOnce(); stats["attempted"] != float64(0) || stats["skipped"] != float64(1) {
+		t.Fatalf("denied Event retried automatically without review: %v", stats)
+	}
+	resume := exec.Command(binary, "requeue", delivery, "--approve")
+	resume.Env = environment
+	if result, err := resume.CombinedOutput(); err != nil {
+		t.Fatalf("explicit reviewed requeue refused: %v output_bytes=%d", err, len(result))
+	}
 	if stats := doOnce(); stats["delivered"] != float64(1) {
-		t.Fatalf("real Goose17 Event record not written: %v", stats)
+		t.Fatalf("real Goose17 Event record not written after authorized requeue: %v", stats)
 	}
 	code, page, _ := request(t, "GET", f.url(f.project)+"/"+workID+"/external-events?limit=5", f.agent, "", "", nil)
 	if code != 200 || len(page["items"].([]any)) != 1 {

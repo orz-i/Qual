@@ -10,8 +10,9 @@
 - 使用 GitHub `X-Hub-Signature-256` 的**原始请求字节**验签，常量时间比较。只有 HMAC、仓库数字身份、事件类型/Action、时间/编号全部合法才在 0700 的专用目录写入 0600 JSON。**绝不保存** webhook raw body、issue 标题、评论、用户消息、URL 等不可执行可信指令之外的任意文本。仅保存 `source=github`、`owner/repo/pull/N` 或 `owner/repo/issues/N`、发生时间、原始 payload SHA-256、固定格式短摘要和审计状态。
 - 同一个 GitHub `X-GitHub-Delivery` UUID、相同内容的重投返回 202（已有记录）；同 UUID 但内容变更返回 409。持久队列最多 1,000 条 Pending 和 10,000 条 Delivered，超出拒绝 503，**不承诺自动接收 GitHub 重试**。GitHub 投递失败须在 GitHub 后台查看、人工或自动 redelivery；不能把 503 视为已经收到。
 - 只有单独创建并由 Human 授予 Qual `event:write` Credential Scope **和 Project Allow** 的 Integration Principal 可上报。**不要修改当前 PI/人类用户的凭据**。Connector 不含 `work:write`、`work:review`、`run:report`，不会通过 GitHub Event 自动更改 WorkItem、创建 Thread/Link、推进状态或记录 Agent Run。
+- Adapter 队列及关联配置的**父目录必须由运行该进程的 OS 用户拥有，且不能被 Group/Other 写入**；队列目录 0700、记录/映射文件 0600。仅保护子目录是不够的，父目录可写会允许替换攻击。
 - `QUAL_GITHUB_MAPPING_FILE` 为由 Human 预先审核并设置 0600 的 JSON，明确将受信任的 `owner/repo/pull/N` 或 `owner/repo/issues/N` → 已存在同 Project WorkItem UUID + Thread UUID 关联；不得按标题猜测。没有映射只在本地保留 `blocked_mapping`，向 Qual 的 POST 次数为零。**一个 GitHub Delivery ID 最多对应一个 WorkItem**；真正多 WorkItem 场景需独立设计来源指派，不要伪造第二个 Delivery ID。
-- `once` 为显式一次性批次（可由外部 Operator 作业调度），不是内置 Agent 或后台自治执行引擎。401/403 保留 `blocked_auth`、404 保留 `blocked_mapping`、409 保留 `conflict`、5xx/网络故障指数退避六次后 `manual_review`；修复问题后可显式执行下一次 once；达到六次后转为 manual_review 的事件不会自动重试，必须由有权维护者核对问题和真实映射，再执行明确的 requeue 命令才能重新尝试（历史 Attempts 计数仍保留）。所有状态和已有 Event ID 保留在持久队列。
+- `once` 为显式一次性批次（可由外部 Operator 作业调度），不是内置 Agent 或后台自治执行引擎。401/403 保留 `blocked_auth`，已确认目标关联不存在的 404 保留 `blocked_mapping`，这些错误**不会自动重复请求**，必须由有权维护者核对权限/关联并通过 `requeue --approve` 明确恢复；尚未建立本地批准映射的事件也保留 `blocked_mapping`，在映射文件得到有效批准后才首次上报。409 保留 `conflict` 并隔离，不提供自动重排；5xx/网络故障指数退避，六次后 `manual_review`；同样需要人工审核再明确重排。所有历史 Attempts 和 Event ID 保留在持久队列。所有状态和已有 Event ID 保留在持久队列。
 - `QUAL_API_URL` 被严格限制为 `http://127.0.0.1:<非特权端口>`；HTTP 客户端**不自动跟随重定向**，不能将 Integration Bearer 发送到非 loopback 域名。
 
 ## 本机验证入口
@@ -61,7 +62,7 @@ qual-github-adapter requeue '<github-delivery-uuid>' --approve
 
 ## 已验证与尚未验证
 
-单独 Go module 的真实 `go test -race -count=1 ./...`、`go vet ./...` 验证了 GitHub 官方 HMAC 测试向量、签名篡改与恶意仓库拒绝、256 KiB 入站上限、重复投递、进程重启后队列/已投递幂等、符号链接替换保护、401/403、404、409、503 重试与六次失败转人工、重定向禁止和伪造 201 响应拒绝。出站单元测试使用隔离 HTTP 测试服务器和合成凭据。
+单独 Go module 的真实 `go test -race -count=1 ./...`、`go vet ./...` 验证了 GitHub 官方 HMAC 测试向量、签名篡改与恶意仓库拒绝、256 KiB 入站上限、重复投递、进程重启后队列/已投递幂等、父目录不可由他人写入、符号链接替换保护及持久来源元数据不可改写、401/403、404、409、503 重试与六次失败转人工、重定向禁止和伪造 201 响应拒绝。出站单元测试使用隔离 HTTP 测试服务器和合成凭据。
 
 此外，`apps/server/integration/phase20_github_adapter_real_transport_test.go` 已在**全新、独立 Goose17 PostgreSQL 数据库和实际测试 S3** 中通过：从 Go 代码真实编译并启动外部 Adapter 子进程，向它注入本地合成 HMAC 签名的 `orz-i/Qual/pull/1`（公开 PR #1 对应来源 ID，**但不是 GitHub 实际投递**）；确认缺映射不提交 Qual、Integration 未获授权403；仅在测试数据库的 Synthetic Integration Principal 获取明确 `event:write` Scope+Project Allow 后才登记一条真实 Goose17 ExternalEvent。独立的合成外部 PI 随后实际 Claim WorkItem、注册并去重 AgentRun、把实际测试传输结果上报为 Run 状态，完成真实 S3 Ready Artifact 及 TestRun/Attempt/Coverage。旧版本 CAS409、重复 Webhook 不追加 Event/Audit、凭据撤销401、新 Event 不再写入以及 Qual 不自行推进 Done 均已断言。测试完成时删除**仅此合成实例**产生的 S3 对象，不碰正式项目数据。
 

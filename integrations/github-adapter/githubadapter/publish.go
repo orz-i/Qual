@@ -33,6 +33,9 @@ func ReadMapping(path string, repo Repository) (Mapping, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return Mapping{}, ErrInvalid
 	}
+	if err := safeParent(filepath.Dir(path)); err != nil {
+		return Mapping{}, err
+	}
 	data, err := trustedFile(path)
 	if err != nil {
 		return Mapping{}, err
@@ -202,7 +205,12 @@ func (p Publisher) PublishOnce(ctx context.Context) (PublishStats, error) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			// Authorization failures and invalid existing links require
+			// explicit operator remediation. Repeated scheduled workers must
+			// not hammer a revoked credential or a known-invalid target.
 			if job.State == "conflict" || job.State == "manual_review" ||
+				job.State == "blocked_auth" ||
+				(job.State == "blocked_mapping" && job.LastErrorCode == "QUAL_WORK_ITEM_OR_THREAD_LINK_NOT_FOUND") ||
 				(!job.NextAttemptAt.IsZero() && job.NextAttemptAt.After(p.now())) {
 				stats.Skipped++
 				continue

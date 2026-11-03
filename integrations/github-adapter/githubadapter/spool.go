@@ -40,15 +40,27 @@ func safeDir(path string) error {
 	return nil
 }
 
+func safeParent(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm()&0022 != 0 {
+		return ErrSpool
+	}
+	if owner, ok := info.Sys().(*syscall.Stat_t); !ok || int(owner.Uid) != os.Getuid() {
+		return ErrSpool
+	}
+	return nil
+}
+
 func OpenSpool(root string) (*Spool, error) {
 	if root == "" || !filepath.IsAbs(root) {
 		return nil, ErrSpool
 	}
-	// Parent must already exist and not be symlinked; the caller explicitly
-	// creates an owner-owned state directory, not an arbitrary system path.
-	parent := filepath.Dir(root)
-	if info, err := os.Lstat(parent); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, ErrSpool
+	// Parent must be owned by this process and not writable by any other
+	// user. A 0700 child alone cannot protect the spool if its parent is
+	// attacker-writable (rename/symlink replacement before locking).
+	if err := safeParent(filepath.Dir(root)); err != nil {
+		return nil, err
 	}
 	if err := safeDir(root); err != nil {
 		return nil, err
@@ -119,7 +131,9 @@ func (s *Spool) read(sub, id string) (Delivery, bool, error) {
 	if saved.DeliveryID != id || saved.RepositoryID <= 0 || saved.PayloadSHA256 == "" ||
 		(saved.State != "pending" && saved.State != "blocked_mapping" &&
 			saved.State != "blocked_auth" && saved.State != "conflict" &&
-			saved.State != "retry" && saved.State != "manual_review" && saved.State != "delivered") {
+			saved.State != "retry" && saved.State != "manual_review" && saved.State != "delivered") ||
+		(sub == "delivered" && saved.State != "delivered") ||
+		(sub == "pending" && saved.State == "delivered") {
 		return Delivery{}, false, ErrSpool
 	}
 	return saved, true, nil
@@ -202,7 +216,9 @@ func (s *Spool) Enqueue(d Delivery) (bool, error) {
 				return err
 			}
 			if exists {
-				if saved.stableIdentity() != d.stableIdentity() || saved.RepositoryID != d.RepositoryID {
+				if saved.stableIdentity() != d.stableIdentity() || saved.RepositoryID != d.RepositoryID ||
+					saved.RepositoryName != d.RepositoryName || saved.ThreadKind != d.ThreadKind ||
+					saved.Summary != d.Summary {
 					return ErrConflict
 				}
 				return nil
@@ -265,8 +281,14 @@ func (s *Spool) Update(d Delivery, completed bool) error {
 		if err != nil {
 			return err
 		}
-		if !ok || old.stableIdentity() != d.stableIdentity() {
+		if !ok || old.stableIdentity() != d.stableIdentity() ||
+			old.RepositoryID != d.RepositoryID || old.RepositoryName != d.RepositoryName ||
+			old.ThreadKind != d.ThreadKind || old.Summary != d.Summary ||
+			!old.ReceivedAt.Equal(d.ReceivedAt) || d.Attempts < old.Attempts {
 			return ErrConflict
+		}
+		if completed && !deliveryIDRE.MatchString(d.DeliveredEventID) {
+			return ErrInvalid
 		}
 		sub := "pending"
 		if completed {
@@ -303,7 +325,8 @@ func (s *Spool) RequeueAfterReview(id string) error {
 			if err != nil {
 				return err
 			}
-			if !exists || item.State != "manual_review" {
+			if !exists || (item.State != "manual_review" && item.State != "blocked_auth" &&
+				!(item.State == "blocked_mapping" && item.LastErrorCode == "QUAL_WORK_ITEM_OR_THREAD_LINK_NOT_FOUND")) {
 				return ErrConflict
 			}
 			item.State = "pending"
