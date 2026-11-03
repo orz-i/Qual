@@ -1,0 +1,9 @@
+extends:
+  - recommended
+
+rules:
+  # This repository has not selected a license. Do not imply one in the API.
+  info-license: off
+  # The only Phase 1 endpoint is public liveness and cannot return 4xx
+  # from the application when called correctly. Revisit before domain APIs.
+  operation-4xx-response: off

@@ -1,0 +1,23 @@
+{
+  "name": "qual",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Agent-ready engineering work and test management platform",
+  "packageManager": "pnpm@12.4.2",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "dev:server": "cd apps/server && go run ./cmd/server",
+    "lint": "pnpm --filter web lint",
+    "typecheck": "pnpm --filter web typecheck",
+    "build": "pnpm --filter web build",
+    "check:go": "cd apps/server && go test ./... && go vet ./...",
+    "check:sdk": "pnpm --filter @qual/sdk-ts typecheck",
+    "contracts:lint": "redocly lint packages/contracts/openapi.yaml",
+    "contracts:generate": "openapi-typescript packages/contracts/openapi.yaml -o packages/sdk-ts/src/schema.d.ts",
+    "contracts:check": "pnpm contracts:lint && pnpm contracts:generate && git diff --exit-code -- packages/sdk-ts/src/schema.d.ts"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.72.1",
+    "openapi-typescript": "7.13.0"
+  }
+}

@@ -1,0 +1,3855 @@
+openapi: 3.1.1
+info:
+  title: Qual HTTP API
+  version: 0.9.0
+  description: |
+    Phase 5: project-scoped work, versioned testing, private evidence, archives and audited webhook delivery.
+    CLI is a REST client and stdio MCP reuses application services; neither
+    executes Agents, tests or CI. Remote MCP OAuth and production Human OIDC
+    are not yet implemented.
+servers:
+  - url: /
+security:
+  - BearerToken: []
+  - BrowserSession: []
+tags:
+  - name: BrowserAuth
+    description: Controlled loopback-only one-time Human login and revocable session
+  - name: System
+    description: Process liveness probes
+  - name: WorkItems
+    description: Authorized Task and Bug records with optimistic concurrency
+  - name: AgentRuns
+    description: Authenticated external execution telemetry, never an executor or completion decision
+  - name: ExternalEvents
+    description: Append-only authorized Adapter delivery facts; never an Agent executor
+  - name: Access
+    description: Project-level Human/Agent explicit permissions with immutable audit
+  - name: RoleHistory
+    description: Append-only capacity/provenance for a single real Principal across multiple responsibilities
+  - name: Collaboration
+    description: Append-only comments and acyclic project dependencies
+  - name: History
+    description: Project activity and restricted audit metadata
+  - name: TestManagement
+    description: Immutable test specifications and externally reported execution facts
+  - name: Evidence
+    description: Private S3-backed artifacts and HTTPS references
+  - name: Archive
+    description: Human-controlled verified ZIP/JSONL project exports
+  - name: Webhooks
+    description: Encrypted subscriptions and durable signed Outbox delivery
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      operationId: getHealth
+      security: []
+      summary: Process liveness (not dependency readiness)
+      responses:
+        '200':
+          description: HTTP process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /readyz:
+    get:
+      tags: [System]
+      operationId: getReadiness
+      security: []
+      summary: Non-sensitive database/schema/S3 dependency readiness (not liveness)
+      description: |
+        Fails closed with HTTP 503 when not configured or a required dependency
+        is unavailable. Never reveals DSN, S3 bucket, internal IP or credentials.
+      responses:
+        '200':
+          description: Required dependencies are available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Dependencies missing, not ready or timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+  /internal/metrics:
+    get:
+      tags: [System]
+      operationId: getOperationalMetrics
+      summary: Conditional operator-only Prometheus text metrics with route-template labels
+      description: |
+        Route is absent (404) unless QUAL_METRICS_TOKEN is configured with
+        a separate high-entropy secret, at least 32 characters. Not a project
+        PAT and not a browser Session credential. Only bind Qual to loopback.
+      security:
+        - OperationalToken: []
+      responses:
+        '200':
+          description: Prometheus text 0.0.4 exposition
+          content:
+            text/plain:
+              schema: {type: string}
+        '401':
+          description: Missing or invalid operations-only Bearer token
+        '404':
+          description: No operational token configured
+  /api/v1/auth/login:
+    post:
+      tags: [BrowserAuth]
+      operationId: exchangeBrowserLoginCode
+      security: []
+      summary: Exchange an offline one-time Human code for an HttpOnly local browser session
+      description: |
+        Controlled loopback development only. The response sets an HttpOnly
+        SameSite=Strict session cookie. Requests must originate from the
+        configured local browser origin; code expires within five minutes.
+      parameters:
+        - $ref: '#/components/parameters/BrowserOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserLoginRequest'
+      responses:
+        '200':
+          description: Browser session established; Set-Cookie header is HttpOnly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: Login rate limit
+  /api/v1/auth/session:
+    get:
+      tags: [BrowserAuth]
+      operationId: getBrowserSession
+      security:
+        - BrowserSession: []
+      summary: Get signed-in Human session and a CSRF token for this process
+      responses:
+        '200':
+          description: Session and authorized project list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/auth/logout:
+    post:
+      tags: [BrowserAuth]
+      operationId: logoutBrowserSession
+      security:
+        - BrowserSession: []
+      summary: Revoke the current browser session and credential immediately
+      parameters:
+        - $ref: '#/components/parameters/BrowserOrigin'
+        - $ref: '#/components/parameters/CSRFHeader'
+      responses:
+        '204':
+          description: Session revoked and cookie cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/projects:
+    get:
+      tags: [BrowserAuth]
+      operationId: listAccessibleProjects
+      summary: List Projects visible to the authenticated Human or Agent
+      responses:
+        '200':
+          description: Authorized projects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/projects/{projectID}/test-suites:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [TestManagement]
+      operationId: listTestSuites
+      summary: List project test suites
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuitePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [TestManagement]
+      operationId: createTestSuite
+      summary: Create a test suite
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestSuiteInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestSuite'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-cases:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [TestManagement]
+      operationId: listTestCases
+      summary: List project TestCases and draft revision
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCasePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [TestManagement]
+      operationId: createTestCase
+      summary: Create a test case draft
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestCaseInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCase'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-cases/{caseID}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/CaseID'
+    get:
+      tags: [TestManagement]
+      operationId: getTestCase
+      summary: Read one test case draft
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCase'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    patch:
+      tags: [TestManagement]
+      operationId: updateTestCase
+      summary: Update draft with If-Match revision
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestCaseInput'
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCase'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-cases/{caseID}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/CaseID'
+    get:
+      tags: [TestManagement]
+      operationId: listTestCaseVersions
+      summary: Read immutable test specification versions
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCaseVersionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [TestManagement]
+      operationId: publishTestCase
+      summary: Publish immutable version from a draft revision
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishTestCaseInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCaseVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-cases/{caseID}/coverage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/CaseID'
+    get:
+      tags: [TestManagement]
+      operationId: getTestCaseCoverage
+      summary: Read work items verified by this test case
+      responses:
+        '200':
+          description: Linked work items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoveragePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [TestManagement]
+      operationId: linkTestCaseCoverage
+      summary: Link existing project work item to test case
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoverageInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestCase'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-runs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [TestManagement]
+      operationId: listTestRuns
+      summary: List recorded test runs
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestRunPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [TestManagement]
+      operationId: createTestRun
+      summary: Record a run bound to exact published versions; does not execute tests
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestRunInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-runs/{runID}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/RunID'
+    get:
+      tags: [TestManagement]
+      operationId: getTestRun
+      summary: Read frozen RunItems and latest reported results
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-run-items/{itemID}/attempts:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [TestManagement]
+      operationId: listTestAttempts
+      summary: Read latest 500 immutable attempts for a RunItem
+      responses:
+        '200':
+          description: Successfully retrieved or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestAttemptPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [TestManagement]
+      operationId: recordTestAttempt
+      summary: Append external/manual test result; no test execution
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestAttemptInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestAttempt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-attempts/{attemptID}/defects:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/AttemptID'
+    get:
+      tags: [TestManagement]
+      operationId: listTestAttemptDefects
+      summary: Read existing Bug links for an immutable Failed Attempt
+      description: |
+        Requires effective project test:read. Only relations linked to the requested
+        Attempt within this project are returned. No execution or state changes occur.
+      responses:
+        '200':
+          description: Existing Bug links; empty items if none
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptDefectPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [TestManagement]
+      operationId: linkTestFailureDefect
+      summary: Create or link a Bug only for failed attempt
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DefectLinkInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefectLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/test-runs/{runID}/junit-imports:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/RunID'
+    post:
+      tags: [TestManagement]
+      operationId: importJUnitReport
+      summary: Import bounded JUnit XML into existing frozen RunItems
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReportFilename'
+      requestBody:
+        required: true
+        content:
+          application/xml:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JUnitImportSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}/test-coverage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [TestManagement]
+      operationId: getWorkItemTestCoverage
+      summary: Read test cases verifying this work item
+      responses:
+        '200':
+          description: Linked test cases
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoveringTestCasePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/projects/{projectID}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [Evidence]
+      operationId: listArtifacts
+      summary: List authorized artifacts for target
+      parameters:
+        - $ref: '#/components/parameters/TargetKindQuery'
+        - $ref: '#/components/parameters/TargetIDQuery'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [Evidence]
+      operationId: beginArtifact
+      summary: Create pending SHA-256 verified upload slot
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactBeginInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/artifacts/{artifactID}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ArtifactID'
+    get:
+      tags: [Evidence]
+      operationId: getArtifact
+      summary: Read authorized artifact metadata, without S3 object key
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/artifacts/{artifactID}/content:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ArtifactID'
+    put:
+      tags: [Evidence]
+      operationId: uploadArtifact
+      summary: Proxy limited bytes to private S3 and verify hash
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    get:
+      tags: [Evidence]
+      operationId: downloadArtifact
+      summary: Authorized verified artifact byte stream
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/artifacts/{artifactID}/complete:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ArtifactID'
+    post:
+      tags: [Evidence]
+      operationId: completeArtifact
+      summary: Recheck S3 bytes and permanently mark attachment ready
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/external-references:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [Evidence]
+      operationId: listExternalReferences
+      summary: List external fact links without fetching their URLs
+      parameters:
+        - $ref: '#/components/parameters/TargetKindQuery'
+        - $ref: '#/components/parameters/TargetIDQuery'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalReferencePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [Evidence]
+      operationId: createExternalReference
+      summary: Add authorized HTTPS external fact reference
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalReferenceInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalReference'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}/threads:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/WorkItemID'
+    get:
+      tags: [Evidence]
+      operationId: listWorkItemThreads
+      summary: List active, authorized external thread links for a WorkItem (no external fetch)
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: cursor, in: query, schema: {type: string, format: uuid}, description: Exclusive prior link UUID}
+      responses:
+        '200':
+          description: Active links, ordered by link UUID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkThreadPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Evidence]
+      operationId: linkWorkItemThread
+      summary: Create an audited project-local Thread and active WorkItem link; CAS bumps WorkItem version
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkThreadLinkInput'}
+      responses:
+        '201':
+          description: Linked or identical idempotent replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkThreadMutation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428': {$ref: '#/components/responses/Precondition'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/threads/{threadID}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/WorkItemID'
+      - name: threadID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      tags: [Evidence]
+      operationId: unlinkWorkItemThread
+      summary: Audited soft unlink; preserve link history, CAS bumps WorkItem version
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Unlinked or identical idempotent replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkThreadMutation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '428': {$ref: '#/components/responses/Precondition'}
+  /api/v1/projects/{projectID}/threads/{threadID}/work-items:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - name: threadID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [Evidence]
+      operationId: listThreadWorkItems
+      summary: Resolve linked WorkItems in this project, with bounded stable pagination
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: cursor, in: query, schema: {type: string, format: uuid}, description: Exclusive prior link UUID}
+      responses:
+        '200':
+          description: Active WorkItem links
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ThreadWorkItemPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{projectID}/exports:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [Archive]
+      operationId: listProjectExports
+      summary: List verifiable project archives (Human admin only)
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveExportPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [Archive]
+      operationId: createProjectExport
+      summary: Create consistent project JSONL ZIP snapshot with checksums
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/exports/{exportID}/content:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ExportID'
+    get:
+      tags: [Archive]
+      operationId: downloadProjectExport
+      summary: Download verified ZIP with manifest and S3 objects
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/webhooks:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [Webhooks]
+      operationId: listWebhookSubscriptions
+      summary: List project subscriptions; secrets omitted
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [Webhooks]
+      operationId: registerWebhook
+      summary: Register destination allowlisted HTTPS webhook; secret shown only once
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/webhooks/{subscriptionID}/disable:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/SubscriptionID'
+    post:
+      tags: [Webhooks]
+      operationId: disableWebhook
+      summary: Disable webhook subscription and pending deliveries
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Subscription disabled
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/webhook-deliveries:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [Webhooks]
+      operationId: listWebhookDeliveries
+      summary: Read durable delivery attempts and retry states
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/principals:
+    get:
+      tags: [Access]
+      operationId: resolveProjectPrincipals
+      summary: Resolve minimal display identities of known Principals in the project
+      description: |
+        Requires work:read with current scoped credential and project membership.
+        Only active members of the requested project (or its Workspace Admin)
+        are returned. Does not enumerate all members or return their roles,
+        permissions, credential scopes, tokens, or contact information.
+        Requests contain 1..50 nonzero UUIDs, comma separated.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: ids
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 36
+            maxLength: 1849
+          description: Comma-separated list of 1..50 Principal UUIDs already referenced in project work
+      responses:
+        '200':
+          description: Minimal current project identity summaries; non-members omitted
+          headers:
+            Cache-Control:
+              schema: {type: string}
+              description: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPrincipalPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/projects/{projectID}/access/me:
+    get:
+      tags: [Access]
+      operationId: getMyProjectAccess
+      summary: Effective current credential and project permissions for this Principal
+      description: |
+        Returns effective permissions only after checking an active Principal, Project
+        membership, scoped credential, inherited role policy and explicit project
+        allow/deny overrides. An audit-only Agent can call this endpoint.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Current Principal's effective rights; never returns raw token values
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfAccess'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/projects/{projectID}/access:
+    get:
+      tags: [Access]
+      operationId: listProjectAccess
+      summary: List project member roles and permission overrides
+      description: Requires access:manage; credential scope values of other principals are not returned.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Members and effective Project policy (credential scopes still required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessMemberPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/projects/{projectID}/access/{principalID}/permissions/{permission}:
+    put:
+      tags: [Access]
+      operationId: changeProjectPermission
+      summary: Change a Project member's permission (allow, deny, inherit)
+      description: |
+        Requires access:manage and a valid Idempotency-Key. Optimistic expected_version
+        is 0 for an initial override. Humans and explicitly delegated Agents can
+        manage ordinary permissions. Only a Human Workspace Admin can delegate
+        access:manage; no Principal can modify its own permissions.
+        All mutations are one PostgreSQL transaction with immutable change
+        history, Audit, Activity and Outbox. No Agent execution occurs.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/AccessPrincipalID'
+        - $ref: '#/components/parameters/AccessPermissionPath'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionChangeInput'
+      responses:
+        '200':
+          description: Permission override saved or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionSetting'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/review-queue:
+    get:
+      tags: [WorkItems]
+      operationId: listProjectReviewQueue
+      summary: Read project WorkItems awaiting review or with a latest needs-work decision
+      description: |
+        Requires effective work:read. This is a project-scoped summary of
+        existing work status and immutable Reviewer RoleEntries, not the audit
+        stream. work:review and audit:read are NOT granted by this endpoint.
+        Offset pagination is not a stable snapshot; clients must disclose the
+        loaded range. No writes or automatic approvals occur.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 10000, default: 0}
+      responses:
+        '200':
+          description: Scoped review queue, most recently updated first within each queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewQueuePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/projects/{projectID}/external-events:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    post:
+      tags: [ExternalEvents]
+      operationId: recordExternalEvent
+      summary: Record one previously authenticated external Adapter delivery fact
+      description: |
+        Requires explicit event:write in the Credential Scope AND Project Allow,
+        including for administrators and Integration reporters. It is never
+        inherited from work:write, webhook:manage or run:report. Provider/source
+        strings are untrusted labels, not an authenticated actor. The Adapter,
+        not Qual, verifies any external webhook signature. The Event must
+        reference an existing active WorkItem-Thread link from this Project.
+        One (project,source,external_event_id) maps immutably to one fact;
+        exact replay returns the same Event, conflicting content returns 409.
+        Audit/Activity/Outbox contain provenance only, not the summary or body.
+        This does not mutate WorkItem, Test, Review or AgentRun state.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExternalEventInput'}
+      responses:
+        '201':
+          description: Persisted immutable Event or identical idempotent replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExternalEvent'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428':
+          description: Missing or invalid Idempotency-Key
+  /api/v1/projects/{projectID}/work-items/{itemID}/external-events:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [ExternalEvents]
+      operationId: listWorkItemExternalEvents
+      summary: Read bounded immutable Event facts linked to one WorkItem
+      description: |
+        Requires work:read; event:write is never sufficient for reading.
+        A cursor is the last Event UUID returned for this Project and WorkItem.
+        Page order is received_at descending then id descending, not occurred_at.
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 30}
+        - name: cursor
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Only this WorkItem's project-scoped Event facts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExternalEventPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{projectID}/threads/{threadID}/external-events:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - name: threadID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [ExternalEvents]
+      operationId: listThreadExternalEvents
+      summary: Read bounded immutable Event facts linked to one Thread
+      description: |
+        Requires work:read. Thread identity and cursor are strictly scoped
+        to the requested Project. No live third-party service is contacted.
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 30}
+        - name: cursor
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Only this Thread's project-scoped Event facts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExternalEventPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{projectID}/agent-runs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    post:
+      tags: [AgentRuns]
+      operationId: registerAgentRun
+      summary: Record an existing external Agent run (never starts an executor)
+      description: |
+        Requires explicit run:report credential scope AND project allow.
+        Source and external_run_id are untrusted labels, not authenticated actors.
+        Same project/source/external_run_id cannot be rebound to another WorkItem,
+        Principal or host.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RegisterAgentRun'}
+      responses:
+        '201':
+          description: Registered or safely replayed; source_status starts queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentRun'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428': {$ref: '#/components/responses/Precondition'}
+  /api/v1/projects/{projectID}/agent-runs/{runID}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/RunID'
+    get:
+      tags: [AgentRuns]
+      operationId: getAgentRun
+      summary: Scoped read of an externally reported run
+      description: |
+        Requires work:read. Terminal states never imply WorkItem Done or a
+        passed TestAttempt. Stale is computed from server last_seen and may
+        indicate lost telemetry, not failed execution.
+      responses:
+        '200':
+          description: Current external status projection and observation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentRun'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{projectID}/agent-runs/{runID}/reports:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/RunID'
+    post:
+      tags: [AgentRuns]
+      operationId: reportAgentRun
+      summary: Append a status observation or throttled heartbeat
+      description: |
+        Requires explicit run:report, matching reporter Principal, an expected
+        Run version and Idempotency-Key. Unique source_report_id and payload
+        prevent replay forgery. Older occurred_at observations are archived
+        without overriding latest status. Terminal status cannot be regressed.
+        Heartbeats are sampled once per Run per configured interval (60..3600
+        seconds; default 60) and do not generate Audit/Activity/Outbox or
+        change the status version.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentRunReportInput'}
+      responses:
+        '201':
+          description: Saved or idempotently replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentRunReceipt'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428': {$ref: '#/components/responses/Precondition'}
+        '429':
+          description: Another heartbeat was accepted during this Run's configured sample interval
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    get:
+      tags: [AgentRuns]
+      operationId: listAgentRunReports
+      summary: Read immutable report history by descending sequence
+      description: |
+        Requires work:read. Evidence IDs are redacted without artifact:read.
+        Audit history is separately gated by audit:read.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: before
+          in: query
+          schema: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Scoped immutable report history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentRunReportPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/agent-runs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [AgentRuns]
+      operationId: listAgentRunsForWorkItem
+      summary: Read externally reported runs without changing WorkItem workflow
+      description: Requires work:read; cross-project WorkItem IDs return 404.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 10000}
+      responses:
+        '200':
+          description: Bounded list of external run projections
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentRunPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{projectID}/work-items:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [WorkItems]
+      operationId: listWorkItems
+      summary: List authorized project work items
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/KindFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItemPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [WorkItems]
+      operationId: createWorkItem
+      summary: Create a Task or Bug
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkItem'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [WorkItems]
+      operationId: getWorkItem
+      summary: Get one authorized work item
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    patch:
+      tags: [WorkItems]
+      operationId: updateWorkItem
+      summary: Optimistically update work item fields
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkItem'
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}/context:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [WorkItems]
+      operationId: getWorkItemContext
+      summary: Read a bounded, authorization-filtered WorkItem recovery context
+      description: |
+        Read-only, best-effort projection over persisted WorkItem, review,
+        testing and evidence facts. Default overview gives a small summary
+        and the latest authorized Reviewer reference. Select exactly one
+        section per request and follow its opaque cursor to page histories.
+        Test sections require test:read and artifacts require artifact:read;
+        all sections first require work:read. Cursor includes WorkItem version;
+        after a WorkItem change clients must restart pagination. Independent
+        testing, review or artifact changes do not form one atomic snapshot.
+        Attempt pages use a bounded (ingested_at,source_id) keyset cursor;
+        newly ingested newer attempts cannot shift already-read rows. For
+        <=32 linked RunItems a narrow index query is used; for wider fanout
+        a materialized project-ordered candidate batch is examined, with
+        coverage checked before release of any record. The scan budget is
+        hard limited; exhaustion is explicit 503 CONTEXT_QUERY_BUDGET, not
+        an apparently successful truncated page. Historical cross-domain
+        changes still require source revalidation.
+        This endpoint never infers Passed/Done or starts an Agent.
+      parameters:
+        - name: section
+          in: query
+          required: false
+          schema:
+            type: string
+            default: overview
+            enum: [overview, dependencies, comments, reviews, acceptance, coverage, attempts, artifacts, references]
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: cursor
+          in: query
+          schema: {type: string, maxLength: 512}
+          description: Opaque section/Project/WorkItem/version-specific cursor; Attempt pages carry a stable server-ingested keyset anchor
+      responses:
+        '200':
+          description: Bounded facts from authorized source sections
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkContextPage'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          description: |
+            CONTEXT_QUERY_BUDGET: a bounded Attempt read exhausted its
+            internal candidate scan budget. No partial items/has_more value
+            is returned. Clients can use authorized source-level Test APIs;
+            do not infer absence or retry without a narrower query.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/claim:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    post:
+      tags: [WorkItems]
+      operationId: claimWorkItem
+      summary: Atomically claim an unassigned item
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VersionRequest'
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/review-policy:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [WorkItems]
+      operationId: getProjectReviewPolicy
+      summary: Read current project review-policy defaults and CAS version
+      responses:
+        '200':
+          description: Server-resolved review policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectReviewPolicy'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+    put:
+      tags: [WorkItems]
+      operationId: changeProjectReviewPolicy
+      summary: Authorized CAS review policy change
+      description: |
+        Requires access:manage. Allowing Owner self-acceptance or relaxing
+        the high-risk independent-review requirement additionally requires
+        an actual Human Workspace Admin, not a delegated Agent manager.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProjectReviewPolicyChange'}
+      responses:
+        '200':
+          description: Audit- and idempotency-backed updated project review policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectReviewPolicy'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428': {$ref: '#/components/responses/Precondition'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/complete:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    post:
+      tags: [WorkItems]
+      operationId: completeWorkItem
+      summary: Explicit review-gated acceptance of a WorkItem
+      description: |
+        Requires active work:review and an explicit server-validated decision.
+        Only available on the Goose13 acceptance schema. Legacy transitions
+        to done are rejected after Goose13; historical done records remain
+        legacy_unclassified and are not rewritten. Owner acceptance is never
+        represented as independent review.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DoneDecisionInput'}
+      responses:
+        '200':
+          description: Successful explicit completion
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkItem'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428': {$ref: '#/components/responses/Precondition'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/review-policy:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [WorkItems]
+      operationId: getWorkReviewPolicy
+      summary: Read effective project/WorkItem review policy and high-risk limits
+      responses:
+        '200':
+          description: Server-resolved effective policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkReviewPolicy'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+    put:
+      tags: [WorkItems]
+      operationId: changeWorkReviewPolicy
+      summary: Explicit, authorized CAS WorkItem review policy override
+      description: |
+        Requires access:manage. Loosening from independent to Owner mode
+        additionally requires an actual Human Workspace Admin and
+        project permission for Owner acceptance. This increments the
+        WorkItem version and invalidates stale previous Reviewer approval.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkReviewPolicyChange'}
+      responses:
+        '200':
+          description: Updated versioned WorkItem
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkItem'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '428': {$ref: '#/components/responses/Precondition'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/acceptances:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [WorkItems]
+      operationId: getWorkAcceptanceHistory
+      summary: Read actual completion decision or explicit legacy_unclassified
+      description: |
+        On Goose12 and on older Done work items without a structured
+        acceptance decision, mode is legacy_unclassified; no reviewer is
+        fabricated. On incomplete items mode is not_completed. Requires
+        work:read. Never returns credential secrets.
+      responses:
+        '200':
+          description: Read-only authoritative acceptance state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkAcceptanceHistory'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /api/v1/projects/{projectID}/work-items/{itemID}/transitions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    post:
+      tags: [WorkItems]
+      operationId: transitionWorkItem
+      summary: Apply a legal work state transition
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionRequest'
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}/role-entries:
+    get:
+      tags: [RoleHistory]
+      operationId: listWorkRoleEntries
+      summary: Recent immutable responsibility records for a WorkItem
+      description: |
+        Shows the real authenticated Principal and their stated capacity.
+        Role tags never impersonate another Agent. List currently returns
+        the latest 100 entries; project ZIP includes the full bounded history.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkItemID'
+      responses:
+        '200':
+          description: Append-only role history (newest first)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleEntriesPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [RoleHistory]
+      operationId: recordWorkRoleEntry
+      summary: Record one authenticated Principal's task capacity and evidence
+      description: |
+        Requires WorkItem version, Idempotency-Key and the relevant project
+        scopes. Executor requires work:write, tester requires test:write plus
+        work:read, reviewer requires work:review plus work:read, and auditor
+        requires audit:read plus work:write and work:read. Reviewer passed
+        does not by itself make WorkItem done; a state transition is separate.
+        self_review is computed by Qual, never accepted from callers.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/WorkItemID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleEntryInput'
+      responses:
+        '201':
+          description: Created or idempotently replayed an immutable role record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}/comments:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [Collaboration]
+      operationId: listWorkItemComments
+      summary: List recent work item comments (up to 100)
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [Collaboration]
+      operationId: addWorkItemComment
+      summary: Append an auditable comment
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentRequest'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/work-items/{itemID}/dependencies:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+      - $ref: '#/components/parameters/ItemID'
+    get:
+      tags: [Collaboration]
+      operationId: listWorkItemDependencies
+      summary: List outgoing blocking dependencies (up to 100)
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencyPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+    post:
+      tags: [Collaboration]
+      operationId: linkWorkItemDependency
+      summary: Create an acyclic project-local blocking dependency
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DependencyRequest'
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/activity:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [History]
+      operationId: listProjectActivity
+      summary: Read visible project activity
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+  /api/v1/projects/{projectID}/audit:
+    parameters:
+      - $ref: '#/components/parameters/ProjectID'
+    get:
+      tags: [History]
+      operationId: listProjectAudit
+      summary: Read authorized audit metadata (audit:read scope)
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Successful read or mutation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '428':
+          $ref: '#/components/responses/Precondition'
+components:
+  securitySchemes:
+    OperationalToken:
+      type: http
+      scheme: bearer
+      description: Separate operator-only metrics token, never an Agent or Human PAT.
+    BrowserSession:
+      type: apiKey
+      in: cookie
+      name: qual_session
+      description: Only available on configured loopback browser origins; CSRF+Origin required for writes
+    BearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        Scoped high-entropy PAT for controlled environments only.
+        Never use in browser localStorage. OAuth/OIDC is not yet available.
+  parameters:
+    BrowserOrigin:
+      name: Origin
+      in: header
+      required: false
+      schema: {type: string}
+      description: Exact configured local browser origin.
+    CSRFHeader:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string, minLength: 64, maxLength: 64}
+      description: Session-bound CSRF token retrieved from GET /api/v1/auth/session.
+    CaseID:
+      name: caseID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    RunID:
+      name: runID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    AttemptID:
+      name: attemptID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ReportFilename:
+      name: X-Report-Filename
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 160}
+      description: Simple XML report filename, no path segments.
+    ArtifactID:
+      name: artifactID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ExportID:
+      name: exportID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    SubscriptionID:
+      name: subscriptionID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    TargetKindQuery:
+      name: target_kind
+      in: query
+      required: true
+      schema: {$ref: '#/components/schemas/ArtifactTargetKind'}
+    TargetIDQuery:
+      name: target_id
+      in: query
+      required: true
+      schema: {type: string, format: uuid}
+    AccessPrincipalID:
+      name: principalID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    AccessPermissionPath:
+      name: permission
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/PermissionName'}
+    WorkItemID:
+      name: itemID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ProjectID:
+      name: projectID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ItemID:
+      name: itemID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 8, maxLength: 128}
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Double-quoted integer version, for example "3"
+      schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100}
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string, maxLength: 2048}
+    StatusFilter:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/Status'
+    KindFilter:
+      name: kind
+      in: query
+      schema:
+        $ref: '#/components/schemas/Kind'
+  responses:
+    BadRequest:
+      description: HTTP 400 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: HTTP 401 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: HTTP 403 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: HTTP 404 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: HTTP 409 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unprocessable:
+      description: HTTP 422 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Precondition:
+      description: HTTP 428 API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    BrowserLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: One-time offline-generated code; never use an Agent PAT.
+    BrowserSessionResponse:
+      type: object
+      required: [principal, projects, csrf_token]
+      properties:
+        principal:
+          $ref: '#/components/schemas/PrincipalInfo'
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        csrf_token:
+          type: string
+          description: Only for in-memory browser use, not a credential.
+    PrincipalInfo:
+      type: object
+      required: [id, workspace_id, display_name, kind]
+      properties:
+        id: {type: string, format: uuid}
+        workspace_id: {type: string, format: uuid}
+        display_name: {type: string}
+        kind: {type: string, enum: [human]}
+    Project:
+      type: object
+      required: [id, workspace_id, key]
+      properties:
+        id: {type: string, format: uuid}
+        workspace_id: {type: string, format: uuid}
+        key: {type: string}
+    ProjectPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+    PermissionName:
+      type: string
+      enum: [work:read, work:write, work:claim, work:review, audit:read,
+        test:read, test:write, artifact:read, artifact:write, event:write, run:report,
+        archive:export, webhook:manage, access:manage]
+    PermissionEffect:
+      type: string
+      enum: [inherit, allow, deny]
+    PermissionSetting:
+      type: object
+      required: [permission, effect, version, allowed_by_project]
+      properties:
+        permission: {$ref: '#/components/schemas/PermissionName'}
+        effect: {$ref: '#/components/schemas/PermissionEffect'}
+        version: {type: integer, minimum: 0}
+        allowed_by_project:
+          type: boolean
+          description: Project-level ability only; a credential must also contain the scope.
+    ProjectPrincipalSummary:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, kind]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        kind: {type: string, enum: [human, agent, integration]}
+    ProjectPrincipalPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/ProjectPrincipalSummary'}
+    AccessMember:
+      type: object
+      required: [principal_id, display_name, kind, role, permissions]
+      properties:
+        principal_id: {type: string, format: uuid}
+        display_name: {type: string}
+        kind: {type: string, enum: [human, agent, integration]}
+        role: {type: string, enum: [workspace_admin, project_maintainer, project_member, project_viewer]}
+        permissions:
+          type: array
+          items: {$ref: '#/components/schemas/PermissionSetting'}
+    AccessMemberPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AccessMember'}
+    SelfAccess:
+      type: object
+      required: [project_id, principal_id, kind, role, credential_scopes, effective_permissions]
+      properties:
+        project_id: {type: string, format: uuid}
+        principal_id: {type: string, format: uuid}
+        kind: {type: string, enum: [human, agent, integration]}
+        role: {type: string, enum: [workspace_admin, project_maintainer, project_member, project_viewer]}
+        credential_scopes: {type: array, items: {$ref: '#/components/schemas/PermissionName'}}
+        effective_permissions: {type: array, items: {$ref: '#/components/schemas/PermissionName'}}
+    PermissionChangeInput:
+      type: object
+      additionalProperties: false
+      required: [effect, expected_version, reason]
+      properties:
+        effect: {$ref: '#/components/schemas/PermissionEffect'}
+        expected_version: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 3, maxLength: 500}
+    ReadinessResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [ready, unavailable]}
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, const: ok}
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            request_id: {type: string, format: uuid}
+    Kind:
+      type: string
+      enum: [task, bug]
+    Status:
+      type: string
+      enum: [backlog, todo, in_progress, in_review, done, cancelled]
+    Priority:
+      type: string
+      enum: [urgent, high, medium, low]
+    BugDetails:
+      type: object
+      required: [severity]
+      properties:
+        severity: {type: string, enum: [blocker, critical, major, minor, trivial]}
+        reproduction_steps: {type: string}
+        expected_behavior: {type: string}
+        actual_behavior: {type: string}
+        environment: {type: string}
+    CreateWorkItem:
+      type: object
+      additionalProperties: false
+      required: [kind, title]
+      properties:
+        kind:
+          $ref: '#/components/schemas/Kind'
+        title: {type: string, minLength: 1, maxLength: 240}
+        description: {type: string, maxLength: 20000}
+        acceptance_criteria:
+          type: array
+          maxItems: 30
+          items: {type: string, minLength: 1, maxLength: 2000}
+        priority:
+          $ref: '#/components/schemas/Priority'
+        bug_details:
+          $ref: '#/components/schemas/BugDetails'
+    UpdateWorkItem:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 240}
+        description: {type: string, maxLength: 20000}
+        acceptance_criteria:
+          type: array
+          maxItems: 30
+          items: {type: string, minLength: 1, maxLength: 2000}
+        priority:
+          $ref: '#/components/schemas/Priority'
+    VersionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: {type: integer, minimum: 1}
+    TransitionRequest:
+      type: object
+      additionalProperties: false
+      required: [status, expected_version]
+      description: |
+        Status done is a legacy transition and becomes unavailable after
+        Goose13; clients must submit DoneDecisionInput to /complete instead.
+      properties:
+        status:
+          $ref: '#/components/schemas/Status'
+        expected_version: {type: integer, minimum: 1}
+    ProjectReviewPolicy:
+      type: object
+      additionalProperties: false
+      required: [project_id, default_mode, owner_acceptance_allowed,
+        force_independent_for_high_risk, version, source]
+      properties:
+        project_id: {type: string, format: uuid}
+        default_mode: {type: string, enum: [independent_review, owner_acceptance]}
+        owner_acceptance_allowed: {type: boolean}
+        force_independent_for_high_risk: {type: boolean}
+        version: {type: integer, minimum: 0}
+        source: {type: string, enum: [project_default, project]}
+    ProjectReviewPolicyChange:
+      type: object
+      additionalProperties: false
+      required: [default_mode, owner_acceptance_allowed,
+        force_independent_for_high_risk, expected_version, reason]
+      properties:
+        default_mode: {type: string, enum: [independent_review, owner_acceptance]}
+        owner_acceptance_allowed: {type: boolean}
+        force_independent_for_high_risk: {type: boolean}
+        expected_version: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 16, maxLength: 2000}
+    WorkReviewPolicy:
+      type: object
+      additionalProperties: false
+      required: [project_id, work_item_id, mode, source, project_policy_version,
+        override_version, work_version, owner_acceptance_allowed,
+        force_independent_for_high_risk, high_risk, forced_independent]
+      properties:
+        project_id: {type: string, format: uuid}
+        work_item_id: {type: string, format: uuid}
+        mode: {type: string, enum: [independent_review, owner_acceptance]}
+        source: {type: string, enum: [project_default, project, work_item]}
+        project_policy_version: {type: integer, minimum: 0}
+        override_version: {type: integer, minimum: 0}
+        work_version: {type: integer, minimum: 1}
+        owner_acceptance_allowed: {type: boolean}
+        force_independent_for_high_risk: {type: boolean}
+        high_risk: {type: boolean}
+        forced_independent: {type: boolean}
+    WorkReviewPolicyChange:
+      type: object
+      additionalProperties: false
+      required: [mode, expected_version, expected_policy_version, reason]
+      properties:
+        mode: {type: string, enum: [independent_review, owner_acceptance]}
+        expected_version: {type: integer, minimum: 1}
+        expected_policy_version: {type: integer, minimum: 0}
+        reason: {type: string, minLength: 16, maxLength: 2000}
+    WorkAcceptanceDecision:
+      type: object
+      additionalProperties: false
+      required: [id, actor_id, acceptance_mode, independent, explicit_self_review,
+        reviewer_entry_id, reason, policy_source, policy_version,
+        reference_kind, reference_value, work_version_before,
+        work_version_after, accepted_at]
+      properties:
+        id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        acceptance_mode: {type: string, enum: [independent_review, owner_acceptance]}
+        independent: {type: boolean}
+        explicit_self_review: {type: boolean}
+        reviewer_entry_id: {type: [string, 'null'], format: uuid}
+        reason: {type: string}
+        policy_source: {type: string, enum: [project, work_item]}
+        policy_version: {type: integer, minimum: 1}
+        reference_kind: {type: string, enum: [test_run, artifact]}
+        reference_value: {type: string, format: uuid}
+        work_version_before: {type: integer, minimum: 1}
+        work_version_after: {type: integer, minimum: 2}
+        accepted_at: {type: string, format: date-time}
+    WorkAcceptanceHistory:
+      type: object
+      additionalProperties: false
+      required: [work_item_id, work_status, work_version, acceptance_mode, decision]
+      properties:
+        work_item_id: {type: string, format: uuid}
+        work_status: {$ref: '#/components/schemas/Status'}
+        work_version: {type: integer, minimum: 1}
+        acceptance_mode: {type: string, enum: [not_completed, legacy_unclassified, independent_review, owner_acceptance]}
+        decision:
+          oneOf:
+            - $ref: '#/components/schemas/WorkAcceptanceDecision'
+            - type: 'null'
+    DoneDecisionInput:
+      type: object
+      additionalProperties: false
+      required: [acceptance_mode, expected_version, reference_kind, reference_value,
+        acknowledge_self_review]
+      properties:
+        acceptance_mode: {type: string, enum: [independent_review, owner_acceptance]}
+        expected_version: {type: integer, minimum: 1}
+        reason: {type: string, maxLength: 2000}
+        acknowledge_self_review: {type: boolean}
+        reference_kind: {type: string, enum: [test_run, artifact]}
+        reference_value: {type: string, format: uuid}
+    CommentRequest:
+      type: object
+      additionalProperties: false
+      required: [body, expected_version]
+      properties:
+        body: {type: string, minLength: 1, maxLength: 10000}
+        expected_version: {type: integer, minimum: 1}
+    DependencyRequest:
+      type: object
+      additionalProperties: false
+      required: [to_item_id, expected_version]
+      properties:
+        to_item_id: {type: string, format: uuid}
+        expected_version: {type: integer, minimum: 1}
+    RoleCapacity:
+      type: string
+      enum: [executor, tester, reviewer, auditor]
+    RoleOutcome:
+      type: string
+      enum: [observed, passed, failed, needs_work]
+    RoleReferenceKind:
+      type: string
+      enum: [none, git_commit, test_run, artifact]
+    RoleEntryInput:
+      type: object
+      additionalProperties: false
+      required: [capacity, outcome, summary, reference_kind, reference_value, expected_version]
+      properties:
+        capacity: {$ref: '#/components/schemas/RoleCapacity'}
+        outcome: {$ref: '#/components/schemas/RoleOutcome'}
+        summary: {type: string, minLength: 1, maxLength: 5000}
+        reference_kind: {$ref: '#/components/schemas/RoleReferenceKind'}
+        reference_value: {type: string, maxLength: 128}
+        expected_version: {type: integer, minimum: 1}
+    RoleEntry:
+      type: object
+      required: [id, project_id, work_item_id, actor_id, capacity, outcome, summary, reference_kind, reference_value, work_version, work_status, self_review, recorded_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        work_item_id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        capacity: {$ref: '#/components/schemas/RoleCapacity'}
+        outcome: {$ref: '#/components/schemas/RoleOutcome'}
+        summary: {type: string}
+        reference_kind: {$ref: '#/components/schemas/RoleReferenceKind'}
+        reference_value: {type: string}
+        work_version: {type: integer, minimum: 1}
+        work_status: {type: string, enum: [backlog, todo, in_progress, in_review, done, cancelled]}
+        self_review: {type: boolean}
+        recorded_at: {type: string, format: date-time}
+    RoleEntriesPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/RoleEntry'}
+    ReviewQueueDecision:
+      type: object
+      additionalProperties: false
+      required: [id, actor_id, outcome, summary, reference_kind,
+        reference_value, work_version, self_review, recorded_at]
+      properties:
+        id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        outcome: {$ref: '#/components/schemas/RoleOutcome'}
+        summary: {type: string}
+        reference_kind: {$ref: '#/components/schemas/RoleReferenceKind'}
+        reference_value: {type: string}
+        work_version: {type: integer, minimum: 1}
+        self_review: {type: boolean}
+        recorded_at: {type: string, format: date-time}
+    ReviewQueueEntry:
+      type: object
+      additionalProperties: false
+      required: [work_item_id, key, title, kind, status, priority,
+        version, assignee_id, updated_at, review_lane, resubmitted_after_review]
+      properties:
+        work_item_id: {type: string, format: uuid}
+        key: {type: string}
+        title: {type: string}
+        kind: {$ref: '#/components/schemas/Kind'}
+        status: {type: string, enum: [in_progress, in_review]}
+        review_lane:
+          type: string
+          enum: [awaiting, needs_work, ready_to_close]
+          description: Derived from status, latest Reviewer decision, and a later explicit re-submission transition; never authorizes Done.
+        resubmitted_after_review:
+          type: boolean
+          description: |
+            True only while in_review after a server-audited transition back to
+            in_review with version greater than the latest Reviewer record.
+            Previous failed/needs_work history remains unchanged; a new real
+            review decision is required before acceptance.
+        priority: {$ref: '#/components/schemas/Priority'}
+        version: {type: integer, minimum: 1}
+        assignee_id: {type: [string, 'null'], format: uuid}
+        updated_at: {type: string, format: date-time}
+        latest_review: {$ref: '#/components/schemas/ReviewQueueDecision'}
+    ReviewQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ReviewQueueEntry'}
+        has_more: {type: boolean}
+        next_offset: {type: integer, minimum: 1}
+    WorkContextSummary:
+      type: object
+      additionalProperties: false
+      required: [id, key, title, kind, status, priority, version, assignee_id, accountable_owner_id]
+      properties:
+        id: {type: string, format: uuid}
+        key: {type: string}
+        title: {type: string}
+        kind: {$ref: '#/components/schemas/Kind'}
+        status: {$ref: '#/components/schemas/Status'}
+        priority: {$ref: '#/components/schemas/Priority'}
+        version: {type: integer, minimum: 1}
+        assignee_id: {type: [string, 'null'], format: uuid}
+        accountable_owner_id: {type: [string, 'null'], format: uuid}
+    WorkContextDependencyFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_key, from_item_id, to_item_id, key, status, version, created_at]
+      properties:
+        source: {type: string, const: work_dependencies}
+        source_key:
+          type: string
+          description: Stable composite relation key projectID/from_item_id/to_item_id (not a fabricated row UUID)
+        from_item_id: {type: string, format: uuid}
+        to_item_id: {type: string, format: uuid}
+        key: {type: string}
+        status: {$ref: '#/components/schemas/Status'}
+        version: {type: integer, minimum: 1}
+        created_at: {type: string, format: date-time}
+    WorkContextCommentFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_id, author_id, excerpt, created_at]
+      properties:
+        source: {type: string, const: work_comments}
+        source_id: {type: string, format: uuid}
+        author_id: {type: string, format: uuid}
+        excerpt: {type: string, maxLength: 240}
+        created_at: {type: string, format: date-time}
+    WorkContextReviewFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_id, actor_id, outcome, work_version, self_review,
+        reference_kind, reference_value, excerpt, recorded_at]
+      properties:
+        source: {type: string, const: work_role_entries}
+        source_id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        outcome: {$ref: '#/components/schemas/RoleOutcome'}
+        work_version: {type: integer, minimum: 1}
+        self_review: {type: boolean}
+        reference_kind: {$ref: '#/components/schemas/RoleReferenceKind'}
+        reference_value: {type: string}
+        excerpt: {type: string, maxLength: 240}
+        recorded_at: {type: string, format: date-time}
+    WorkContextCoverageFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_key, work_item_id, test_case_id, key,
+        published_version_id, revision]
+      properties:
+        source: {type: string, const: test_case_coverage}
+        source_key:
+          type: string
+          description: Stable composite relation key projectID/work_item_id/test_case_id (not a fabricated row UUID)
+        work_item_id: {type: string, format: uuid}
+        test_case_id: {type: string, format: uuid}
+        key: {type: string}
+        published_version_id: {type: [string, 'null'], format: uuid}
+        revision: {type: integer, minimum: 1}
+    WorkContextAttemptFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_id, run_id, run_item_id, test_case_id,
+        test_case_version_id, attempt_no, status, source_kind,
+        observed_at, ingested_at, excerpt]
+      properties:
+        source: {type: string, const: test_attempts}
+        source_id: {type: string, format: uuid}
+        run_id: {type: string, format: uuid}
+        run_item_id: {type: string, format: uuid}
+        test_case_id: {type: string, format: uuid}
+        test_case_version_id: {type: string, format: uuid}
+        attempt_no: {type: integer, minimum: 1}
+        status: {$ref: '#/components/schemas/TestResultStatus'}
+        source_kind: {type: string, enum: [manual, external, junit]}
+        observed_at: {type: string, format: date-time}
+        ingested_at: {type: string, format: date-time}
+        excerpt: {type: string, maxLength: 240}
+    WorkContextArtifactFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_id, id, sha256, filename, size_bytes, ready_at]
+      properties:
+        source: {type: string, const: artifacts}
+        source_id: {type: string, format: uuid}
+        id: {type: string, format: uuid}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        filename: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        ready_at: {type: string, format: date-time}
+    WorkContextExternalReferenceFact:
+      type: object
+      additionalProperties: false
+      required: [source, source_id, provider, kind, external_id, url, created_at]
+      properties:
+        source: {type: string, const: external_references}
+        source_id: {type: string, format: uuid}
+        provider: {type: string}
+        kind: {type: string}
+        external_id: {type: string}
+        url: {type: string, format: uri}
+        created_at: {type: string, format: date-time}
+    WorkContextFact:
+      description: |
+        Exact persisted source variants; source_id is a real row UUID, while
+        composite-link tables use source_key plus their real foreign IDs.
+        Context does not confer audit, test or artifact permissions.
+      oneOf:
+        - $ref: '#/components/schemas/WorkContextDependencyFact'
+        - $ref: '#/components/schemas/WorkContextCommentFact'
+        - $ref: '#/components/schemas/WorkContextReviewFact'
+        - $ref: '#/components/schemas/WorkContextCoverageFact'
+        - $ref: '#/components/schemas/WorkContextAttemptFact'
+        - $ref: '#/components/schemas/WorkContextArtifactFact'
+        - $ref: '#/components/schemas/WorkContextExternalReferenceFact'
+    WorkContextPage:
+      type: object
+      additionalProperties: false
+      required: [schema_version, context_revision, project_id, generated_at,
+        consistency, work_item, section, items, has_more, paging_limited]
+      properties:
+        schema_version: {type: integer, const: 2}
+        context_revision:
+          type: integer
+          minimum: 1
+          description: WorkItem version only; NOT a transaction snapshot across domains
+        project_id: {type: string, format: uuid}
+        generated_at: {type: string, format: date-time}
+        consistency: {type: string, const: best_effort}
+        work_item: {$ref: '#/components/schemas/WorkContextSummary'}
+        section:
+          type: string
+          enum: [overview, dependencies, comments, reviews, acceptance, coverage, attempts, artifacts, references]
+        items:
+          type: array
+          maxItems: 100
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/WorkContextFact'
+              - $ref: '#/components/schemas/WorkAcceptanceHistory'
+        has_more: {type: boolean}
+        paging_limited:
+          type: boolean
+          description: True when deeper rows exist but the bounded per-query pagination history ceiling has been reached
+        next_cursor: {type: string, maxLength: 512}
+        available_sections:
+          type: array
+          items: {type: string}
+          description: Names of possible sections, not grants or row counts
+        latest_review: {$ref: '#/components/schemas/WorkContextReviewFact'}
+        acceptance: {$ref: '#/components/schemas/WorkAcceptanceHistory'}
+    AgentRunStatus:
+      type: string
+      description: External host claim only, never a WorkItem or TestAttempt result
+      enum: [queued, running, blocked, succeeded, failed, cancelled]
+    AgentRunObservability:
+      type: string
+      description: Computed on read, never authoritative external status
+      enum: [current, stale, unknown, terminal]
+    ExternalEventInput:
+      type: object
+      additionalProperties: false
+      description: |
+        Untrusted, already Adapter-verified external delivery metadata only.
+        Qual rejects unknown fields, raw payload, token/secret-like summaries
+        and HTML; authentication always comes from the Qual Credential.
+      required: [work_item_id, thread_id, source, external_event_id,
+        event_type, occurred_at, payload_sha256, summary]
+      properties:
+        work_item_id: {type: string, format: uuid}
+        thread_id: {type: string, format: uuid}
+        source:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_-]{0,63}$'
+        external_event_id:
+          type: string
+          minLength: 1
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$'
+        event_type:
+          type: string
+          minLength: 1
+          maxLength: 80
+          pattern: '^[a-z][a-z0-9_.-]{0,79}$'
+        occurred_at: {type: string, format: date-time}
+        payload_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 240
+          description: Single-line safe display text; must not contain credentials or HTML
+    ExternalEvent:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, work_item_id, thread_id, source,
+        external_event_id, event_type, occurred_at, received_at,
+        payload_sha256, summary, reporter_principal_id]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        work_item_id: {type: string, format: uuid}
+        thread_id: {type: string, format: uuid}
+        source: {type: string}
+        external_event_id: {type: string}
+        event_type: {type: string}
+        occurred_at: {type: string, format: date-time}
+        received_at: {type: string, format: date-time}
+        payload_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        summary: {type: string, maxLength: 240}
+        reporter_principal_id: {type: string, format: uuid}
+    ExternalEventPage:
+      type: object
+      additionalProperties: false
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/ExternalEvent'}
+        has_more: {type: boolean}
+        next_cursor:
+          type: string
+          format: uuid
+          description: Opaque, scoped UUID of the last returned Event
+    RegisterAgentRun:
+      type: object
+      additionalProperties: false
+      required: [work_item_id, source, external_run_id, host]
+      properties:
+        work_item_id: {type: string, format: uuid}
+        source: {type: string, minLength: 1, maxLength: 64}
+        external_run_id: {type: string, minLength: 1, maxLength: 160}
+        host: {type: string, minLength: 1, maxLength: 200}
+    AgentRun:
+      type: object
+      required: [id, project_id, work_item_id, source, external_run_id, host,
+        reporter_principal_id, source_status, version, report_sequence, created_at,
+        updated_at, observability]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        work_item_id: {type: string, format: uuid}
+        source: {type: string}
+        external_run_id: {type: string}
+        host: {type: string}
+        reporter_principal_id: {type: string, format: uuid}
+        source_status: {$ref: '#/components/schemas/AgentRunStatus'}
+        version: {type: integer, minimum: 1}
+        report_sequence: {type: integer, minimum: 0}
+        last_status_occurred_at: {type: [string, 'null'], format: date-time}
+        last_seen_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        observability: {$ref: '#/components/schemas/AgentRunObservability'}
+    AgentRunReportInput:
+      type: object
+      additionalProperties: false
+      required: [source_report_id, kind, occurred_at]
+      description: |
+        For kind=status, status is required. For kind=heartbeat, status,
+        error_reason and evidence fields must be absent. occurred_at is an
+        untrusted source timestamp, bounded against future clock skew.
+      properties:
+        source_report_id: {type: string, minLength: 1, maxLength: 160}
+        kind: {type: string, enum: [status, heartbeat]}
+        status: {$ref: '#/components/schemas/AgentRunStatus'}
+        occurred_at: {type: string, format: date-time}
+        error_reason: {type: string, maxLength: 500}
+        evidence_artifact_id: {type: string, format: uuid}
+        external_reference_id: {type: string, format: uuid}
+    AgentRunReport:
+      type: object
+      required: [id, agent_run_id, sequence, source_report_id, kind, occurred_at,
+        received_at, applied, run_version, reporter_principal_id]
+      properties:
+        id: {type: string, format: uuid}
+        agent_run_id: {type: string, format: uuid}
+        sequence: {type: integer, minimum: 1}
+        source_report_id: {type: string}
+        kind: {type: string, enum: [status, heartbeat]}
+        status: {$ref: '#/components/schemas/AgentRunStatus'}
+        occurred_at: {type: string, format: date-time}
+        received_at: {type: string, format: date-time}
+        applied: {type: boolean}
+        run_version: {type: integer, minimum: 1}
+        reporter_principal_id: {type: string, format: uuid}
+        error_reason: {type: string}
+        evidence_artifact_id: {type: string, format: uuid}
+        external_reference_id: {type: string, format: uuid}
+    AgentRunReceipt:
+      type: object
+      required: [run, report]
+      properties:
+        run: {$ref: '#/components/schemas/AgentRun'}
+        report: {$ref: '#/components/schemas/AgentRunReport'}
+    AgentRunPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AgentRun'}
+    AgentRunReportPage:
+      type: object
+      required: [items, next_before]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AgentRunReport'}
+        next_before: {type: [integer, 'null'], minimum: 1}
+    WorkItem:
+      type: object
+      required: [id, workspace_id, project_id, key, kind, title, description,
+        acceptance_criteria, status, priority, assignee_id, accountable_owner_id,
+        created_by, version, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        workspace_id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        key: {type: string}
+        kind:
+          $ref: '#/components/schemas/Kind'
+        title: {type: string}
+        description: {type: string}
+        acceptance_criteria:
+          type: array
+          items: {type: string}
+        status:
+          $ref: '#/components/schemas/Status'
+        priority:
+          $ref: '#/components/schemas/Priority'
+        assignee_id: {type: [string, 'null'], format: uuid}
+        accountable_owner_id: {type: [string, 'null'], format: uuid}
+        created_by: {type: string, format: uuid}
+        version: {type: integer, minimum: 1}
+        bug_details:
+          $ref: '#/components/schemas/BugDetails'
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    WorkItemPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkItem'
+        next_cursor: {type: string}
+    Comment:
+      type: object
+      required: [id, work_item_id, author_id, body, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        work_item_id: {type: string, format: uuid}
+        author_id: {type: string, format: uuid}
+        body: {type: string}
+        created_at: {type: string, format: date-time}
+    CommentPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+    Dependency:
+      type: object
+      required: [from_item_id, to_item_id, created_at]
+      properties:
+        from_item_id: {type: string, format: uuid}
+        to_item_id: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+    DependencyPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Dependency'
+    ActivityRecord:
+      type: object
+      required: [id, actor_id, operation, entity_id, occurred_at]
+      properties:
+        id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        operation: {type: string}
+        entity_id: {type: string, format: uuid}
+        occurred_at: {type: string, format: date-time}
+    ActivityPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActivityRecord'
+    AuditRecord:
+      type: object
+      required: [id, actor_id, credential_id, request_id, operation,
+        entity_id, old_version, new_version, occurred_at]
+      properties:
+        id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        credential_id: {type: string, format: uuid}
+        request_id: {type: string}
+        operation: {type: string}
+        entity_id: {type: string, format: uuid}
+        old_version: {type: [integer, 'null']}
+        new_version: {type: integer}
+        occurred_at: {type: string, format: date-time}
+    AuditPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditRecord'
+    TestSuiteInput:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 160}
+    TestSuite:
+      type: object
+      required: [id, project_id, name, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        name: {type: string}
+        created_at: {type: string, format: date-time}
+    SuitePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/TestSuite'}}
+    TestStep:
+      type: object
+      required: [action, expected]
+      properties:
+        action: {type: string, minLength: 1, maxLength: 2000}
+        expected: {type: string, maxLength: 2000}
+    TestSpecification:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 240}
+        preconditions: {type: string, maxLength: 10000}
+        steps:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/TestStep'}
+        expected_result: {type: string, maxLength: 10000}
+    TestCaseInput:
+      type: object
+      required: [specification]
+      additionalProperties: false
+      properties:
+        specification: {$ref: '#/components/schemas/TestSpecification'}
+        suite_id: {type: [string, 'null'], format: uuid}
+    TestCase:
+      type: object
+      required: [id, project_id, key, suite_id, draft, revision, published_version, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        key: {type: string}
+        suite_id: {type: [string, 'null'], format: uuid}
+        draft: {$ref: '#/components/schemas/TestSpecification'}
+        revision: {type: integer, minimum: 1}
+        published_version: {type: integer, minimum: 0}
+        updated_at: {type: string, format: date-time}
+    TestCasePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/TestCase'}}
+    PublishTestCaseInput:
+      type: object
+      required: [expected_revision]
+      additionalProperties: false
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+    TestCaseVersion:
+      type: object
+      required: [id, test_case_id, version, source_revision, specification, sha256, published_at]
+      properties:
+        id: {type: string, format: uuid}
+        test_case_id: {type: string, format: uuid}
+        version: {type: integer, minimum: 1}
+        source_revision: {type: integer, minimum: 1}
+        specification: {$ref: '#/components/schemas/TestSpecification'}
+        sha256: {type: string, minLength: 64, maxLength: 64}
+        published_at: {type: string, format: date-time}
+    TestCaseVersionPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/TestCaseVersion'}}
+    CoverageInput:
+      type: object
+      required: [work_item_id]
+      additionalProperties: false
+      properties:
+        work_item_id: {type: string, format: uuid}
+    TestRunInput:
+      type: object
+      required: [name, case_version_ids]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 240}
+        source_system: {type: string, maxLength: 80}
+        external_run_key: {type: string, maxLength: 240}
+        environment: {type: string, maxLength: 2000}
+        build_ref: {type: string, maxLength: 240}
+        case_version_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {type: string, format: uuid}
+    TestRunItem:
+      type: object
+      required: [id, test_case_id, test_case_key, case_version_id, case_version, snapshot_sha256, latest_status, attempt_count]
+      properties:
+        id: {type: string, format: uuid}
+        test_case_id: {type: string, format: uuid}
+        test_case_key: {type: string}
+        case_version_id: {type: string, format: uuid}
+        case_version: {type: integer, minimum: 1}
+        snapshot_sha256: {type: string, minLength: 64, maxLength: 64}
+        latest_status:
+          oneOf:
+            - {$ref: '#/components/schemas/TestResultStatus'}
+            - {type: 'null'}
+        attempt_count: {type: integer, minimum: 0}
+    TestRun:
+      type: object
+      required: [id, project_id, name, source_system, environment, build_ref, created_at, items]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        name: {type: string}
+        source_system: {type: string}
+        external_run_key: {type: string}
+        environment: {type: string}
+        build_ref: {type: string}
+        created_at: {type: string, format: date-time}
+        items: {type: array, items: {$ref: '#/components/schemas/TestRunItem'}}
+    TestRunPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/TestRun'}}
+    TestResultStatus:
+      type: string
+      enum: [passed, failed, blocked, skipped]
+    TestAttemptInput:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: {$ref: '#/components/schemas/TestResultStatus'}
+        note: {type: string, maxLength: 20000}
+        observed_at: {type: string, format: date-time}
+        source_kind: {type: string, enum: [manual, external, junit]}
+        external_attempt_key: {type: string, maxLength: 240}
+    TestAttempt:
+      type: object
+      required: [id, run_item_id, attempt_no, status, note, observed_at, ingested_at, reported_by, source_kind]
+      properties:
+        id: {type: string, format: uuid}
+        run_item_id: {type: string, format: uuid}
+        attempt_no: {type: integer, minimum: 1}
+        status: {$ref: '#/components/schemas/TestResultStatus'}
+        note: {type: string}
+        observed_at: {type: string, format: date-time}
+        ingested_at: {type: string, format: date-time}
+        reported_by: {type: string, format: uuid}
+        source_kind: {type: string, enum: [manual, external, junit]}
+        external_attempt_key: {type: string}
+    TestAttemptPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/TestAttempt'}}
+    DefectLinkInput:
+      type: object
+      additionalProperties: false
+      properties:
+        bug_id: {type: [string, 'null'], format: uuid}
+        title: {type: string, maxLength: 240}
+        severity: {type: string, enum: [blocker, critical, major, minor, trivial]}
+        reproduction_steps: {type: string, maxLength: 20000}
+      description: Set either bug_id to link an existing Bug or title to create one.
+    AttemptDefect:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, bug_id, bug_key, bug_title, bug_status, linked_at, linked_by]
+      properties:
+        attempt_id: {type: string, format: uuid}
+        bug_id: {type: string, format: uuid}
+        bug_key: {type: string}
+        bug_title: {type: string}
+        bug_status: {type: string}
+        linked_at: {type: string, format: date-time}
+        linked_by: {type: string, format: uuid}
+    AttemptDefectPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AttemptDefect'}
+    DefectLink:
+      type: object
+      required: [attempt_id, bug_id, bug_key, created]
+      properties:
+        attempt_id: {type: string, format: uuid}
+        bug_id: {type: string, format: uuid}
+        bug_key: {type: string}
+        created: {type: boolean}
+    CoveredWorkItem:
+      type: object
+      required: [id, key, title, status]
+      properties:
+        id: {type: string, format: uuid}
+        key: {type: string}
+        title: {type: string}
+        status: {type: string}
+    CoveragePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/CoveredWorkItem'}
+    CoveringTestCase:
+      type: object
+      required: [id, key, title, published_version]
+      properties:
+        id: {type: string, format: uuid}
+        key: {type: string}
+        title: {type: string}
+        published_version: {type: integer}
+    CoveringTestCasePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/CoveringTestCase'}
+    ArtifactTargetKind:
+      type: string
+      enum: [work_item, test_case, test_run, test_attempt]
+    ArtifactBeginInput:
+      type: object
+      additionalProperties: false
+      required: [target_kind, target_id, filename, media_type, size_bytes, sha256]
+      properties:
+        target_kind: {$ref: '#/components/schemas/ArtifactTargetKind'}
+        target_id: {type: string, format: uuid}
+        filename: {type: string, minLength: 1, maxLength: 160}
+        media_type: {type: string, minLength: 3, maxLength: 120}
+        size_bytes: {type: integer, minimum: 1, maximum: 10485760}
+        sha256: {type: string, minLength: 64, maxLength: 64}
+    Artifact:
+      type: object
+      required: [id, project_id, target_kind, target_id, filename, media_type, size_bytes,
+        sha256, state, created_by, created_at, uploaded_at, ready_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        target_kind: {$ref: '#/components/schemas/ArtifactTargetKind'}
+        target_id: {type: string, format: uuid}
+        filename: {type: string}
+        media_type: {type: string}
+        size_bytes: {type: integer}
+        sha256: {type: string}
+        state: {type: string, enum: [pending, uploaded, ready, failed]}
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+        uploaded_at: {type: [string, 'null'], format: date-time}
+        ready_at: {type: [string, 'null'], format: date-time}
+    ArtifactPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Artifact'}}
+    ExternalReferenceInput:
+      type: object
+      additionalProperties: false
+      required: [target_kind, target_id, provider, kind, external_id, url]
+      properties:
+        target_kind: {$ref: '#/components/schemas/ArtifactTargetKind'}
+        target_id: {type: string, format: uuid}
+        provider: {type: string, minLength: 1, maxLength: 60}
+        kind: {type: string, minLength: 1, maxLength: 60}
+        external_id: {type: string, minLength: 1, maxLength: 240}
+        url: {type: string, format: uri, minLength: 8, maxLength: 2048}
+    ExternalReference:
+      allOf:
+        - {$ref: '#/components/schemas/ExternalReferenceInput'}
+        - type: object
+          required: [id, project_id, created_by, created_at]
+          properties:
+            id: {type: string, format: uuid}
+            project_id: {type: string, format: uuid}
+            created_by: {type: string, format: uuid}
+            created_at: {type: string, format: date-time}
+    ExternalReferencePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ExternalReference'}}
+    WorkThreadLinkInput:
+      type: object
+      additionalProperties: false
+      required: [provider, thread_kind, external_thread_id, expected_version]
+      properties:
+        provider: {type: string, pattern: '^[a-z][a-z0-9_-]{0,59}$'}
+        thread_kind: {type: string, pattern: '^[a-z][a-z0-9_-]{0,59}$'}
+        external_thread_id: {type: string, minLength: 3, maxLength: 240, pattern: '^[^/\\s]+(/[^/\\s]+)+$', description: 'Fully scoped source path (at least tenant/id); GitHub pull_request must be owner/repo/pull/{positive-number}; GitHub issue must be owner/repo/issues/{positive-number}. No bare IDs.'}
+        url: {type: string, format: uri, maxLength: 2048, description: 'Optional safe HTTPS registrable ICANN public-suffix-domain URL (PSL, no credentials/query/fragment); never resolved or fetched; does not verify provider ownership'}
+        source_reference_id: {type: string, format: uuid, description: Optional existing same-project ExternalReference verified against this WorkItem and source identity}
+        expected_version: {type: integer, minimum: 1, description: 'Current WorkItem version, incremented on link'}
+    ExternalThread:
+      type: object
+      required: [id, project_id, provider, thread_kind, external_thread_id, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        provider: {type: string}
+        thread_kind: {type: string}
+        external_thread_id: {type: string}
+        url: {type: string, description: May be empty when the provider has no safe URL}
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+    WorkThreadLink:
+      type: object
+      required: [id, project_id, thread_id, work_item_id, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        thread_id: {type: string, format: uuid}
+        work_item_id: {type: string, format: uuid}
+        source_reference_id: {type: [string, 'null'], format: uuid}
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+        removed_by: {type: [string, 'null'], format: uuid}
+        removed_at: {type: [string, 'null'], format: date-time}
+    WorkThreadEntry:
+      type: object
+      required: [thread, link]
+      properties:
+        thread: {$ref: '#/components/schemas/ExternalThread'}
+        link: {$ref: '#/components/schemas/WorkThreadLink'}
+    WorkThreadMutation:
+      allOf:
+        - $ref: '#/components/schemas/WorkThreadEntry'
+        - type: object
+          required: [work_item_version]
+          properties:
+            work_item_version: {type: integer, minimum: 2}
+    WorkThreadPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WorkThreadEntry'}}
+        next_cursor: {type: [string, 'null'], format: uuid}
+    ThreadWorkItemSummary:
+      type: object
+      required: [id, key, status, version]
+      properties:
+        id: {type: string, format: uuid}
+        key: {type: string}
+        status: {$ref: '#/components/schemas/Status'}
+        version: {type: integer, minimum: 1}
+    ThreadWorkItemEntry:
+      type: object
+      required: [link, work_item]
+      properties:
+        link: {$ref: '#/components/schemas/WorkThreadLink'}
+        work_item: {$ref: '#/components/schemas/ThreadWorkItemSummary'}
+    ThreadWorkItemPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ThreadWorkItemEntry'}}
+        next_cursor: {type: [string, 'null'], format: uuid}
+    ArchiveFile:
+      type: object
+      required: [path, sha256, size_bytes]
+      properties:
+        path: {type: string}
+        sha256: {type: string, minLength: 64, maxLength: 64}
+        size_bytes: {type: integer, minimum: 0}
+        records: {type: integer, minimum: 0}
+    ArchiveManifest:
+      type: object
+      required: [archive_schema_version, project_id, snapshot_at, files]
+      properties:
+        archive_schema_version: {type: integer, enum: [1, 2, 3], description: 'v1 legacy; v2 includes external threads and historical links; v3 adds external AgentRun and losslessly sharded reports. Earlier archives remain verifiable.'}
+        project_id: {type: string, format: uuid}
+        snapshot_at: {type: string, format: date-time}
+        files: {type: array, items: {$ref: '#/components/schemas/ArchiveFile'}}
+    ArchiveExport:
+      type: object
+      required: [id, project_id, sha256, size_bytes, snapshot_at, created_at, manifest]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        sha256: {type: string, minLength: 64, maxLength: 64}
+        size_bytes: {type: integer, minimum: 1, maximum: 33554432}
+        snapshot_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+        manifest: {$ref: '#/components/schemas/ArchiveManifest'}
+    ArchiveExportPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ArchiveExport'}}
+    WebhookInput:
+      type: object
+      additionalProperties: false
+      required: [endpoint, event_types]
+      properties:
+        endpoint: {type: string, format: uri, minLength: 12, maxLength: 2048}
+        event_types:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: {type: string}
+    WebhookSubscription:
+      type: object
+      required: [id, project_id, endpoint, event_types, created_at, disabled_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        endpoint: {type: string}
+        event_types: {type: array, items: {type: string}}
+        created_at: {type: string, format: date-time}
+        disabled_at: {type: [string, 'null'], format: date-time}
+    WebhookRegistration:
+      allOf:
+        - {$ref: '#/components/schemas/WebhookSubscription'}
+        - type: object
+          properties:
+            secret:
+              type: string
+              description: Only present in first successful registration response. Do not store in source control.
+    WebhookPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WebhookSubscription'}}
+    WebhookDelivery:
+      type: object
+      required: [id, event_id, subscription_id, status, attempt_count, next_attempt_at, last_http_status, last_error_code, delivered_at]
+      properties:
+        id: {type: string, format: uuid}
+        event_id: {type: string, format: uuid}
+        subscription_id: {type: string, format: uuid}
+        status: {type: string, enum: [queued, retrying, processing, delivered, dead, cancelled]}
+        attempt_count: {type: integer, minimum: 0, maximum: 5}
+        next_attempt_at: {type: string, format: date-time}
+        last_http_status: {type: [integer, 'null']}
+        last_error_code: {type: [string, 'null']}
+        delivered_at: {type: [string, 'null'], format: date-time}
+    WebhookDeliveryPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WebhookDelivery'}}
+    JUnitImportSummary:
+      type: object
+      required: [id, run_id, sha256, filename, imported_count, passed, failed, skipped]
+      properties:
+        id: {type: string, format: uuid}
+        run_id: {type: string, format: uuid}
+        sha256: {type: string, minLength: 64, maxLength: 64}
+        filename: {type: string}
+        imported_count: {type: integer, minimum: 1}
+        passed: {type: integer, minimum: 0}
+        failed: {type: integer, minimum: 0}
+        skipped: {type: integer, minimum: 0}

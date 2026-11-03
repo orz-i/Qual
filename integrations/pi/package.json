@@ -1,0 +1,15 @@
+{
+  "name": "@qual/pi-local",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Local PI convenience commands and dogfood skill for Qual; business tools remain in Qual MCP",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/qual.ts"],
+    "skills": ["./skills/qual-pi-dogfood"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

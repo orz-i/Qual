@@ -1,0 +1,226 @@
+name: Qual CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qual-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/server/go.mod
+          cache: false
+      - name: Verify gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(gofmt -l apps/server)"
+          if [[ -n "$output" ]]; then
+            printf 'Files needing gofmt:\n%s\n' "$output"
+            exit 1
+          fi
+      - name: Unit tests and race detector
+        working-directory: apps/server
+        run: go test -race ./...
+      - name: Static analysis
+        working-directory: apps/server
+        run: go vet ./...
+      - name: Go vulnerability scan for reachable code
+        working-directory: apps/server
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Build HTTP server, CLI, stdio MCP, ops, maintenance and offline admin
+        working-directory: apps/server
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o /tmp/qual-server-ci ./cmd/server
+          go build -o /tmp/qual-cli-ci ./cmd/qual
+          go build -o /tmp/qual-mcp-ci ./cmd/qual-mcp
+          go build -o /tmp/qual-admin-ci ./cmd/qual-admin
+          go build -o /tmp/qual-maintenance-ci ./cmd/qual-maintenance
+          go build -o /tmp/qual-ops-ci ./cmd/qual-ops
+
+  web:
+    name: Frontend and OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install frozen workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Phase 7 PI extension and seed security checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s scripts/tests -p 'test_phase7_*.py'
+          node --experimental-strip-types scripts/tests/phase7_pi_extension_check.mjs
+          bash -n scripts/phase7_bootstrap.sh scripts/qual-pi.sh scripts/phase7_human_login.sh
+      - name: Verify API contract and generated TypeScript SDK
+        run: pnpm contracts:check
+      - name: Typecheck generated SDK
+        run: pnpm check:sdk
+      - name: Audit production browser dependencies
+        run: pnpm audit --prod --audit-level=moderate
+      - name: Lint frontend
+        run: pnpm lint
+      - name: Typecheck frontend
+        run: pnpm typecheck
+      - name: Run frontend unit regressions
+        run: pnpm --filter web test:unit
+      - name: Build frontend
+        run: pnpm build
+
+  migrations:
+    name: PostgreSQL migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/server/go.mod
+          cache: false
+      - name: Start isolated PostgreSQL and private S3 fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/compose.dev.yaml up -d --wait
+          ready=0
+          for i in $(seq 1 30); do
+            if curl --fail --silent --connect-timeout 1 --aws-sigv4 'aws:amz:us-east-1:s3' --user 'qualdev:qual_dev_only' \
+              -o /dev/null 'http://127.0.0.1:18333/qual-artifacts?list-type=2'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+      - name: Install Goose migration CLI
+        run: go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
+      - name: Apply real Goose1–17 forward migrations and enforce immutable Down
+        shell: bash
+        env:
+          DATABASE_URL: postgres://qual:qual_dev_only@127.0.0.1:15432/qual?sslmode=disable
+        run: |
+          set -euo pipefail
+          goose="$(go env GOPATH)/bin/goose"
+          python3 -B scripts/ops/check_migration_sequence.py apps/server/migrations
+          GOOSE="$goose" make migrate-up
+          current="$(docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d qual -Atqc 'SELECT MAX(version_id) FROM public.goose_db_version WHERE is_applied')"
+          test "$current" = '17'
+          # Goose17 stores immutable ExternalEvent facts: destructive Down must
+          # fail closed rather than delete the very evidence the product keeps.
+          if GOOSE="$goose" make migrate-down > /tmp/qual-ci-forbidden-down.log 2>&1; then
+            echo 'ERROR: Goose17 unexpectedly allowed destructive Down' >&2
+            exit 1
+          fi
+          after="$(docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d qual -Atqc 'SELECT MAX(version_id) FROM public.goose_db_version WHERE is_applied')"
+          test "$after" = '17'
+          GOOSE="$goose" make migrate-status
+      - name: Phase 2–9 PostgreSQL and real-S3 race integration tests
+        working-directory: apps/server
+        env:
+          QUAL_TEST_DATABASE_URL: postgres://qual:qual_dev_only@127.0.0.1:15432/qual?sslmode=disable
+          QUAL_S3_ENDPOINT: http://127.0.0.1:18333
+          QUAL_S3_ACCESS_KEY: qualdev
+          QUAL_S3_SECRET_KEY: qual_dev_only
+          QUAL_S3_BUCKET: qual-artifacts
+        run: go test -race -tags=integration -count=1 ./integration
+      - name: Guarded Context, AgentRun/Archive and historical Done Gate suites
+        shell: bash
+        env:
+          QUAL_S3_ENDPOINT: http://127.0.0.1:18333
+          QUAL_S3_REGION: us-east-1
+          QUAL_S3_ACCESS_KEY: qualdev
+          QUAL_S3_SECRET_KEY: qual_dev_only
+          QUAL_S3_BUCKET: qual-artifacts
+        run: bash scripts/tests/ci_goose17_guarded.sh
+      - name: Credential retirement with disposable PostgreSQL and synthetic tokens
+        shell: bash
+        env:
+          QUAL_S3_ENDPOINT: http://127.0.0.1:18333
+          QUAL_S3_ACCESS_KEY: qualdev
+          QUAL_S3_SECRET_KEY: qual_dev_only
+          QUAL_S3_BUCKET: qual-artifacts
+        run: |
+          set -euo pipefail
+          db="qual5_rotate_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          [[ "$db" =~ ^qual5_rotate_ci_[0-9]+_[0-9]+$ ]]
+          cleanup() {
+            docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $db WITH (FORCE);"
+          }
+          trap cleanup EXIT
+          docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db;"
+          scratch_url="postgres://qual:qual_dev_only@127.0.0.1:15432/$db?sslmode=disable"
+          DATABASE_URL="$scratch_url" GOOSE="$(go env GOPATH)/bin/goose" make migrate-up
+          (
+            cd apps/server
+            QUAL_TEST_DATABASE_URL="$scratch_url" go test -race -tags=integration -count=1 -run '^(TestPhase7PATAuthoritativeRotationWithIsolatedDatabase|TestOperatorRetireSupersededRequiresProtectedCurrentTokenAndExplicitApply)$' -v ./integration
+          )
+      - name: External test report CLI idempotency and WorkItem coverage in disposable PostgreSQL
+        shell: bash
+        env:
+          QUAL_S3_ENDPOINT: http://127.0.0.1:18333
+          QUAL_S3_ACCESS_KEY: qualdev
+          QUAL_S3_SECRET_KEY: qual_dev_only
+          QUAL_S3_BUCKET: qual-artifacts
+        run: |
+          set -euo pipefail
+          db="qual12_report_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          [[ "$db" =~ ^qual12_report_ci_[0-9]+_[0-9]+$ ]]
+          cleanup() {
+            docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $db WITH (FORCE);"
+          }
+          trap cleanup EXIT
+          docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db;"
+          scratch_url="postgres://qual:qual_dev_only@127.0.0.1:15432/$db?sslmode=disable"
+          DATABASE_URL="$scratch_url" GOOSE="$(go env GOPATH)/bin/goose" make migrate-up
+          (cd apps/server && QUAL_TEST_DATABASE_URL="$scratch_url" go test -race -tags=integration -count=1 -run '^TestPhase12ExternalReportCLIRecordsOnceAcrossRetries$' -v ./integration)
+      - name: WorkItem Git/TestRun evidence packet with disposable PostgreSQL and S3
+        shell: bash
+        env:
+          QUAL_S3_ENDPOINT: http://127.0.0.1:18333
+          QUAL_S3_ACCESS_KEY: qualdev
+          QUAL_S3_SECRET_KEY: qual_dev_only
+          QUAL_S3_BUCKET: qual-artifacts
+        run: |
+          set -euo pipefail
+          db="qual13_packet_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          [[ "$db" =~ ^qual13_packet_ci_[0-9]+_[0-9]+$ ]]
+          cleanup() {
+            docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $db WITH (FORCE);"
+          }
+          trap cleanup EXIT
+          docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db;"
+          scratch_url="postgres://qual:qual_dev_only@127.0.0.1:15432/$db?sslmode=disable"
+          DATABASE_URL="$scratch_url" GOOSE="$(go env GOPATH)/bin/goose" make migrate-up
+          (cd apps/server && QUAL_TEST_DATABASE_URL="$scratch_url" go test -race -tags=integration -count=1 -run '^TestPhase13WorkItemEvidencePacketUsesRealGitRunAndS3$' -v ./integration)
+      - name: Signed PostgreSQL and isolated S3 restore drill
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOSE="$(go env GOPATH)/bin/goose" bash scripts/phase6_recovery_drill.sh
+      - name: Shutdown isolated development fixtures
+        if: always()
+        run: docker compose -f deploy/compose.dev.yaml down
