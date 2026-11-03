@@ -63,7 +63,7 @@ export function useChangeAccess(projectID:string){
 }
 export const allPermissions: PermissionName[]=[
   'work:read','work:write','work:claim','work:review','audit:read',
-  'test:read','test:write','artifact:read','artifact:write','run:report',
+  'test:read','test:write','artifact:read','artifact:write','run:report','event:write',
   'archive:export','webhook:manage','access:manage',
 ]
 export const permissionLabels:Record<PermissionName,string>={
@@ -77,6 +77,7 @@ export const permissionLabels:Record<PermissionName,string>={
   'artifact:read':'读取证据附件',
   'artifact:write':'上传证据附件',
   'run:report':'登记外部 AgentRun（需显式授权）',
+  'event:write':'登记外部适配器事件（需显式授权）',
   'archive:export':'生成项目归档',
   'webhook:manage':'管理事件订阅',
   'access:manage':'管理项目权限',
