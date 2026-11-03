@@ -22,8 +22,8 @@ run_scoped() (
   set -euo pipefail
   local group="$1" prefix="$2" version="$3" pattern="$4" want_pass="$5" want_skip="$6"
   local db="${prefix}_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-  [[ "$prefix" =~ ^(qual27_ctx_integrated|qual32_run|qual21_gate|qual21_history12)$ ]] || exit 3
-  [[ "$db" =~ ^(qual27_ctx_integrated|qual32_run|qual21_gate|qual21_history12)_ci_[0-9]+_[0-9]+$ ]] || exit 3
+  [[ "$prefix" =~ ^(qual27_ctx_integrated|qual32_run|qual21_gate|qual21_history12|qual36_adapter|qual30_event)$ ]] || exit 3
+  [[ "$db" =~ ^(qual27_ctx_integrated|qual32_run|qual21_gate|qual21_history12|qual36_adapter|qual30_event)_ci_[0-9]+_[0-9]+$ ]] || exit 3
   [[ "$(pg -c "SELECT COUNT(*) FROM pg_database WHERE datname='$db'")" = 0 ]] || {
     echo "Disposable DB already exists; refuse to reuse" >&2
     exit 4
@@ -65,6 +65,8 @@ run_scoped() (
   echo "PASS $group Goose$version: $passed top-level tests, $skipped expected skip"
 )
 
+run_scoped external-events qual30_event 17 '^TestQual30ExternalEventAppendOnlyIdentityScopeAndTimeline$' 1 0
+run_scoped github-adapter qual36_adapter 17 '^TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI$' 1 0
 run_scoped context qual27_ctx_integrated 17 '^TestQual27Context' 3 0
 run_scoped runs-and-archive qual32_run 17 '^(TestAgentRun|TestQual4344AuditMultiRunArchiveCompleteness)' 4 0
 run_scoped done-gate qual21_gate 17 '^TestPhase11' 9 1
@@ -72,4 +74,4 @@ run_scoped done-gate qual21_gate 17 '^TestPhase11' 9 1
 run_scoped historical-goose12 qual21_history12 12 \
   '^TestPhase11ReadAcceptanceHistoryFromPreMigrationGoose12$' 1 0
 
-echo 'All 17 guarded Context/AgentRun/Archive/DoneGate/Goose12 tests passed'
+echo 'All 19 guarded ExternalEvent/GitHubAdapter/Context/AgentRun/Archive/DoneGate/Goose12 tests passed'

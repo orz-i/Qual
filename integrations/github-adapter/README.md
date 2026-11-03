@@ -61,6 +61,10 @@ qual-github-adapter requeue '<github-delivery-uuid>' --approve
 
 ## 已验证与尚未验证
 
-单独 Go module 的真实 `go test -race -count=1 ./...`、`go vet ./...` 验证了 GitHub 官方 HMAC 测试向量、签名篡改与恶意仓库拒绝、256 KiB 入站上限、重复投递、进程重启后队列/已投递幂等、符号链接替换保护、401/403、404、409、503 重试与六次失败转人工、重定向禁止和伪造 201 响应拒绝；出站 Qual 使用隔离 HTTP 测试服务器和**合成凭据**，没有写入真实 Goose17 业务数据库。
+单独 Go module 的真实 `go test -race -count=1 ./...`、`go vet ./...` 验证了 GitHub 官方 HMAC 测试向量、签名篡改与恶意仓库拒绝、256 KiB 入站上限、重复投递、进程重启后队列/已投递幂等、符号链接替换保护、401/403、404、409、503 重试与六次失败转人工、重定向禁止和伪造 201 响应拒绝。出站单元测试使用隔离 HTTP 测试服务器和合成凭据。
 
-**未完成**：真实 GitHub App 安装、真实 Webhook Secret/Ingress 或官方 GitHub delivery、人工审核的真实 WorkItem–Thread 映射、专用 Integration Principal 的最小授权，以及一个真实 PR → Qual Event → 外部 PI Run/Test/Evidence 的完整端到端事实。需按 QUAL-36/37 后续验证，不能因为这些单元测试通过就把工作项 Done。
+此外，`apps/server/integration/phase20_github_adapter_real_transport_test.go` 已在**全新、独立 Goose17 PostgreSQL 数据库和实际测试 S3** 中通过：从 Go 代码真实编译并启动外部 Adapter 子进程，向它注入本地合成 HMAC 签名的 `orz-i/Qual/pull/1`（公开 PR #1 对应来源 ID，**但不是 GitHub 实际投递**）；确认缺映射不提交 Qual、Integration 未获授权403；仅在测试数据库的 Synthetic Integration Principal 获取明确 `event:write` Scope+Project Allow 后才登记一条真实 Goose17 ExternalEvent。独立的合成外部 PI 随后实际 Claim WorkItem、注册并去重 AgentRun、把实际测试传输结果上报为 Run 状态，完成真实 S3 Ready Artifact 及 TestRun/Attempt/Coverage。旧版本 CAS409、重复 Webhook 不追加 Event/Audit、凭据撤销401、新 Event 不再写入以及 Qual 不自行推进 Done 均已断言。测试完成时删除**仅此合成实例**产生的 S3 对象，不碰正式项目数据。
+
+公开 CI 的 `ci_goose17_guarded.sh` 分别使用专属 `qual30_event_*` 和 `qual36_adapter_*` Goose17 测试库执行 Event 核心及独立 Adapter 端到端两条回归，共计 19 项受保护的真实测试（默认/正式 `qual` 永不运行合成测试）。本机真实运行 `go test -race -tags integration -run '^TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI$' -count=1` 已 Passed；这是**隔离合成端到端测试**，不冒充真实 GitHub App 交付、真实 PI 会话或公网安全验收。
+
+**未完成**：真实 GitHub App 安装、真实 Webhook Secret/Ingress 和来自 GitHub 的实际 Delivery、人工审核的真实 WorkItem–Thread 映射、专用真实 Integration Principal 的最小授权，以及一个真实 GitHub Delivery → Qual Event → 外部 PI Run/Test/Evidence 的运营闭环。需按 QUAL-36/37 后续验证，不能因为隔离合成测试通过就把工作项 Done。
