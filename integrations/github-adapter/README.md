@@ -1,0 +1,66 @@
+# GitHub → Qual 外部 Adapter（QUAL-36，隔离候选）
+
+这个 Go 程序由外部宿主运行，**不是 Qual 内置 Agent 执行器，也不授予任何 WorkItem/Review 权限**。其功能只有：接受 GitHub 签名 Webhook → HMAC-SHA256 验证 → 只保留可核查的事件元数据 → 先写 owner-only 持久队列 → 使用经另行批准的 Integration Credential 上报 Goose17 ExternalEvent。
+
+## 约束
+
+- 默认只监听 `127.0.0.1:18717`，**不会**开启公网端口，也不会修改 Qual 正式运行进程。GitHub 无法直接访问本机 loopback；公开 Webhook 的 TLS 终结、通道保护、IP 规则和 GitHub App 安装由**另行审查**的外部入口提供，不能把现有 `127.0.0.1:18080` Qual API 暴露公网。
+- 配置 `QUAL_GITHUB_REPO_ID` 必须匹配 GitHub 仓库**固定数字 ID**。单单同名 owner/repo 不足以获权；可额外指定 GitHub App `QUAL_GITHUB_INSTALLATION_ID` 约束 App 安装身份。
+- `QUAL_GITHUB_WEBHOOK_SECRET` 为独立高熵 HMAC Secret，最少 32 字节，由有权 Operator 在进程环境安全注入；不能和 GitHub CLI OAuth、Qual PI PAT、Qual Operator 签名 HMAC 共用。
+- 使用 GitHub `X-Hub-Signature-256` 的**原始请求字节**验签，常量时间比较。只有 HMAC、仓库数字身份、事件类型/Action、时间/编号全部合法才在 0700 的专用目录写入 0600 JSON。**绝不保存** webhook raw body、issue 标题、评论、用户消息、URL 等不可执行可信指令之外的任意文本。仅保存 `source=github`、`owner/repo/pull/N` 或 `owner/repo/issues/N`、发生时间、原始 payload SHA-256、固定格式短摘要和审计状态。
+- 同一个 GitHub `X-GitHub-Delivery` UUID、相同内容的重投返回 202（已有记录）；同 UUID 但内容变更返回 409。持久队列最多 1,000 条 Pending 和 10,000 条 Delivered，超出拒绝 503，**不承诺自动接收 GitHub 重试**。GitHub 投递失败须在 GitHub 后台查看、人工或自动 redelivery；不能把 503 视为已经收到。
+- 只有单独创建并由 Human 授予 Qual `event:write` Credential Scope **和 Project Allow** 的 Integration Principal 可上报。**不要修改当前 PI/人类用户的凭据**。Connector 不含 `work:write`、`work:review`、`run:report`，不会通过 GitHub Event 自动更改 WorkItem、创建 Thread/Link、推进状态或记录 Agent Run。
+- `QUAL_GITHUB_MAPPING_FILE` 为由 Human 预先审核并设置 0600 的 JSON，明确将受信任的 `owner/repo/pull/N` 或 `owner/repo/issues/N` → 已存在同 Project WorkItem UUID + Thread UUID 关联；不得按标题猜测。没有映射只在本地保留 `blocked_mapping`，向 Qual 的 POST 次数为零。**一个 GitHub Delivery ID 最多对应一个 WorkItem**；真正多 WorkItem 场景需独立设计来源指派，不要伪造第二个 Delivery ID。
+- `once` 为显式一次性批次（可由外部 Operator 作业调度），不是内置 Agent 或后台自治执行引擎。401/403 保留 `blocked_auth`、404 保留 `blocked_mapping`、409 保留 `conflict`、5xx/网络故障指数退避六次后 `manual_review`；修复问题后可显式执行下一次 once；达到六次后转为 manual_review 的事件不会自动重试，必须由有权维护者核对问题和真实映射，再执行明确的 requeue 命令才能重新尝试（历史 Attempts 计数仍保留）。所有状态和已有 Event ID 保留在持久队列。
+- `QUAL_API_URL` 被严格限制为 `http://127.0.0.1:<非特权端口>`；HTTP 客户端**不自动跟随重定向**，不能将 Integration Bearer 发送到非 loopback 域名。
+
+## 本机验证入口
+
+构建与 Race：
+
+```sh
+cd integrations/github-adapter
+go test -race -count=1 ./...
+go vet ./...
+go build -o /tmp/qual-github-adapter ./cmd/qual-github-adapter
+```
+
+Adapter 本机配置示例（全部为占位符，**不要**将真实 Secret/Token 写入 Git）：
+
+```sh
+export QUAL_GITHUB_REPO_ID=1443998164
+export QUAL_GITHUB_REPOSITORY=orz-i/Qual
+export QUAL_GITHUB_SPOOL_DIR=/private/owner-only/qual-github-spool
+export QUAL_GITHUB_MAPPING_FILE=/private/owner-only/approved-links.json
+export QUAL_API_URL=http://127.0.0.1:18080
+# 由可信 Operator 安全注入独立的 QUAL_GITHUB_WEBHOOK_SECRET；
+# 显式向 Qual 上报时另外注入仅含 event:write 的 QUAL_ADAPTER_TOKEN。
+qual-github-adapter inspect
+qual-github-adapter serve
+# 验签与落盘由 serve 完成；只有经过权限和映射独立配置后：
+qual-github-adapter once
+# Only after reviewing and resolving the incident:
+qual-github-adapter requeue '<github-delivery-uuid>' --approve
+```
+
+已审核的关联文件示例（只是**假 UUID 示例，无法指向真实 WorkItem**）：
+
+```json
+{
+  "repository_id": 1443998164,
+  "repository_name": "orz-i/Qual",
+  "links": {
+    "orz-i/Qual/pull/1": {
+      "project_id": "33333333-3333-4333-8333-333333333333",
+      "work_item_id": "44444444-4444-4444-8444-444444444444",
+      "thread_id": "55555555-5555-4555-8555-555555555555"
+    }
+  }
+}
+```
+
+## 已验证与尚未验证
+
+单独 Go module 的真实 `go test -race -count=1 ./...`、`go vet ./...` 验证了 GitHub 官方 HMAC 测试向量、签名篡改与恶意仓库拒绝、256 KiB 入站上限、重复投递、进程重启后队列/已投递幂等、符号链接替换保护、401/403、404、409、503 重试与六次失败转人工、重定向禁止和伪造 201 响应拒绝；出站 Qual 使用隔离 HTTP 测试服务器和**合成凭据**，没有写入真实 Goose17 业务数据库。
+
+**未完成**：真实 GitHub App 安装、真实 Webhook Secret/Ingress 或官方 GitHub delivery、人工审核的真实 WorkItem–Thread 映射、专用 Integration Principal 的最小授权，以及一个真实 PR → Qual Event → 外部 PI Run/Test/Evidence 的完整端到端事实。需按 QUAL-36/37 后续验证，不能因为这些单元测试通过就把工作项 Done。
