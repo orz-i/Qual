@@ -1,7 +1,11 @@
-name: PR description quality
+name: PR description quality (protected base)
 
+# Runs the workflow and validator from the protected BASE, not the untrusted
+# PR head. Never checkout PR code or expose credentials in this context.
+# Requires this workflow to have already landed on the default branch; PR #1
+# bootstrapping it cannot self-certify enforcement.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -9,11 +13,15 @@ permissions:
 
 jobs:
   description:
-    name: Structured PR evidence and Markdown
+    name: Structured PR evidence and Markdown (trusted base)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Check PR description validator with synthetic tests
+      - name: Checkout pinned trusted base only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Validate trusted description checker
         run: python3 -B -m unittest discover -s scripts/tests -p test_pr_description_quality.py -v
-      - name: Validate this PR's actual GitHub event body
+      - name: Validate GitHub event body using base policy
         run: python3 -B scripts/ops/check_pr_description.py "$GITHUB_EVENT_PATH"
