@@ -210,7 +210,8 @@ func (p Publisher) PublishOnce(ctx context.Context) (PublishStats, error) {
 			// not hammer a revoked credential or a known-invalid target.
 			if job.State == "conflict" || job.State == "manual_review" ||
 				job.State == "blocked_auth" ||
-				(job.State == "blocked_mapping" && job.LastErrorCode == "QUAL_WORK_ITEM_OR_THREAD_LINK_NOT_FOUND") ||
+				(job.State == "blocked_mapping" && (job.LastErrorCode == "QUAL_WORK_ITEM_OR_THREAD_LINK_NOT_FOUND" ||
+					job.LastErrorCode == "PINNED_TARGET_CHANGED")) ||
 				(!job.NextAttemptAt.IsZero() && job.NextAttemptAt.After(p.now())) {
 				stats.Skipped++
 				continue
@@ -224,6 +225,22 @@ func (p Publisher) PublishOnce(ctx context.Context) (PublishStats, error) {
 				}
 				stats.BlockedMapping++
 				continue
+			}
+			if job.PinnedTarget != nil && *job.PinnedTarget != target {
+				job.State = "blocked_mapping"
+				job.LastErrorCode = "PINNED_TARGET_CHANGED"
+				job.NextAttemptAt = time.Time{}
+				if err := p.Spool.Update(job, false); err != nil {
+					return err
+				}
+				stats.BlockedMapping++
+				continue
+			}
+			// Pin exactly once BEFORE HTTP: unknown outcome + reconfigured
+			// approved mapping must not redirect a retry to another project.
+			job, err = p.Spool.PinTarget(job, target)
+			if err != nil {
+				return err
 			}
 			job.Attempts++
 			status, id, err := p.deliver(ctx, base, job, target)

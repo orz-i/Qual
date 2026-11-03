@@ -15,6 +15,7 @@ import (
 
 const MaxDelivered = 10000
 const MaxRecordBytes int64 = 8192
+const MaxTransitions = 24
 
 // Spool is an owner-only persistent queue of normalized fact metadata.
 // No webhook JSON, external titles or credentials are written to disk.
@@ -70,7 +71,16 @@ func OpenSpool(root string) (*Spool, error) {
 			return nil, err
 		}
 	}
-	return &Spool{Root: root}, nil
+	spool := &Spool{Root: root}
+	// A killed worker may have synced the Delivered record but not yet
+	// removed the old Pending file. Reconcile before any new publishing.
+	err := spool.withLock("worker", func() error {
+		return spool.withLock("queue", spool.reconcileLocked)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return spool, nil
 }
 
 func (s *Spool) path(sub, id string) (string, error) {
@@ -129,6 +139,8 @@ func (s *Spool) read(sub, id string) (Delivery, bool, error) {
 		return Delivery{}, false, ErrSpool
 	}
 	if saved.DeliveryID != id || saved.RepositoryID <= 0 || saved.PayloadSHA256 == "" ||
+		(saved.PinnedTarget != nil && !validTarget(*saved.PinnedTarget)) ||
+		!validHistory(saved.History) ||
 		(saved.State != "pending" && saved.State != "blocked_mapping" &&
 			saved.State != "blocked_auth" && saved.State != "conflict" &&
 			saved.State != "retry" && saved.State != "manual_review" && saved.State != "delivered") ||
@@ -201,6 +213,179 @@ func (s *Spool) atomicWrite(path string, d Delivery) error {
 	return opened.Sync()
 }
 
+func validHistory(entries []Transition) bool {
+	if len(entries) > MaxTransitions {
+		return false
+	}
+	for _, e := range entries {
+		if e.At.IsZero() || e.Attempts < 0 || e.OperatorUID < 0 ||
+			len(e.ErrorCode) > 100 || e.HTTPStatus < 0 ||
+			(e.Kind != "state" && e.Kind != "operator_requeue") {
+			return false
+		}
+		if e.Kind == "operator_requeue" &&
+			e.ReasonCode != "auth-restored" &&
+			e.ReasonCode != "link-repaired" &&
+			e.ReasonCode != "transient-verified" {
+			return false
+		}
+	}
+	return true
+}
+func historyPrefix(a, b []Transition) bool {
+	if len(a) > len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameHistory(a, b []Transition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validTarget(t Target) bool {
+	return deliveryIDRE.MatchString(t.ProjectID) &&
+		deliveryIDRE.MatchString(t.WorkItemID) && deliveryIDRE.MatchString(t.ThreadID)
+}
+
+func sameTarget(a, b *Target) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+// reconcileLocked runs under the queue lock. The durable Delivered receipt
+// is authoritative if a crash left the identical Pending record behind.
+// A disagreement is an integrity failure, not permission to overwrite it.
+func (s *Spool) reconcileLocked() error {
+	pendingDir := filepath.Join(s.Root, "pending")
+	entries, err := os.ReadDir(pendingDir)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		old, exists, err := s.read("pending", id)
+		if err != nil || !exists {
+			return ErrSpool
+		}
+		done, committed, err := s.read("delivered", id)
+		if err != nil {
+			return err
+		}
+		if !committed {
+			continue
+		}
+		if old.stableIdentity() != done.stableIdentity() ||
+			old.RepositoryID != done.RepositoryID || old.RepositoryName != done.RepositoryName ||
+			old.ThreadKind != done.ThreadKind || old.Summary != done.Summary ||
+			!old.ReceivedAt.Equal(done.ReceivedAt) || !sameTarget(old.PinnedTarget, done.PinnedTarget) ||
+			!historyPrefix(old.History, done.History) || done.DeliveredEventID == "" {
+			return ErrConflict
+		}
+		path, _ := s.path("pending", id)
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if changed {
+		return syncDirectory(pendingDir)
+	}
+	return nil
+}
+
+// payloadSeenLocked scans bounded, trusted disk records rather than relying
+// on an untrusted, unsigned X-GitHub-Delivery header for replay prevention.
+// No secondary index can get out of sync in a power-loss window.
+func (s *Spool) payloadSeenLocked(in Delivery) (bool, error) {
+	for _, sub := range []string{"pending", "delivered"} {
+		entries, err := os.ReadDir(filepath.Join(s.Root, sub))
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), ".json")
+			d, found, err := s.read(sub, id)
+			if err != nil || !found {
+				return false, ErrSpool
+			}
+			if d.PayloadSHA256 != in.PayloadSHA256 {
+				continue
+			}
+			if d.RepositoryID != in.RepositoryID || d.RepositoryName != in.RepositoryName {
+				return false, ErrConflict
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// PinTarget persists the first approved destination BEFORE external HTTP.
+// The pin is immutable through retries, mapping changes and process restarts.
+func (s *Spool) PinTarget(in Delivery, target Target) (Delivery, error) {
+	if !validTarget(target) {
+		return Delivery{}, ErrInvalid
+	}
+	var result Delivery
+	err := s.withLock("queue", func() error {
+		saved, found, err := s.read("pending", in.DeliveryID)
+		if err != nil {
+			return err
+		}
+		if !found || saved.stableIdentity() != in.stableIdentity() ||
+			saved.RepositoryID != in.RepositoryID || saved.RepositoryName != in.RepositoryName {
+			return ErrConflict
+		}
+		if saved.PinnedTarget != nil {
+			if *saved.PinnedTarget != target {
+				return ErrConflict
+			}
+			result = saved
+			return nil
+		}
+		saved.PinnedTarget = &target
+		path, _ := s.path("pending", in.DeliveryID)
+		if err := s.atomicWrite(path, saved); err != nil {
+			return err
+		}
+		result = saved
+		return nil
+	})
+	return result, err
+}
+
 // Enqueue persists metadata before returning a 2xx to GitHub.
 // An identical redelivery (same X-GitHub-Delivery) is an acknowledged no-op.
 // Same identity with altered content is always a conflict.
@@ -210,6 +395,9 @@ func (s *Spool) Enqueue(d Delivery) (bool, error) {
 	}
 	created := false
 	err := s.withLock("queue", func() error {
+		if err := s.reconcileLocked(); err != nil {
+			return err
+		}
 		for _, dir := range []string{"pending", "delivered"} {
 			saved, exists, err := s.read(dir, d.DeliveryID)
 			if err != nil {
@@ -223,6 +411,13 @@ func (s *Spool) Enqueue(d Delivery) (bool, error) {
 				}
 				return nil
 			}
+		}
+		if seen, err := s.payloadSeenLocked(d); err != nil {
+			return err
+		} else if seen {
+			// The signature covers the same bytes; a different, UNSIGNED
+			// Delivery ID cannot mint a second event or queue reservation.
+			return nil
 		}
 		pending, err := os.ReadDir(filepath.Join(s.Root, "pending"))
 		if err != nil {
@@ -277,6 +472,9 @@ func (s *Spool) Pending() ([]Delivery, error) {
 
 func (s *Spool) Update(d Delivery, completed bool) error {
 	return s.withLock("queue", func() error {
+		if err := s.reconcileLocked(); err != nil {
+			return err
+		}
 		old, ok, err := s.read("pending", d.DeliveryID)
 		if err != nil {
 			return err
@@ -284,7 +482,8 @@ func (s *Spool) Update(d Delivery, completed bool) error {
 		if !ok || old.stableIdentity() != d.stableIdentity() ||
 			old.RepositoryID != d.RepositoryID || old.RepositoryName != d.RepositoryName ||
 			old.ThreadKind != d.ThreadKind || old.Summary != d.Summary ||
-			!old.ReceivedAt.Equal(d.ReceivedAt) || d.Attempts < old.Attempts {
+			!old.ReceivedAt.Equal(d.ReceivedAt) || !sameTarget(old.PinnedTarget, d.PinnedTarget) ||
+			!sameHistory(old.History, d.History) || d.Attempts < old.Attempts {
 			return ErrConflict
 		}
 		if completed && !deliveryIDRE.MatchString(d.DeliveredEventID) {
@@ -295,6 +494,14 @@ func (s *Spool) Update(d Delivery, completed bool) error {
 			sub = "delivered"
 			d.State = "delivered"
 		}
+		if len(d.History) >= MaxTransitions {
+			return ErrFull // preserve existing evidence instead of truncating it
+		}
+		d.History = append(d.History, Transition{
+			At: time.Now().UTC(), Kind: "state", State: d.State,
+			Attempts: d.Attempts, HTTPStatus: d.LastHTTPStatus,
+			ErrorCode: d.LastErrorCode,
+		})
 		path, err := s.path(sub, d.DeliveryID)
 		if err != nil {
 			return err
@@ -307,6 +514,9 @@ func (s *Spool) Update(d Delivery, completed bool) error {
 			if err := os.Remove(oldPath); err != nil {
 				return err
 			}
+			// Sync the source directory too. A crash might otherwise
+			// resurrect Pending; reconciliation still prevents replay.
+			return syncDirectory(filepath.Join(s.Root, "pending"))
 		}
 		return nil
 	})
@@ -315,8 +525,9 @@ func (s *Spool) Update(d Delivery, completed bool) error {
 // RequeueAfterReview does not erase the actual Attempt counter or history.
 // A human operator must independently review the last failure before calling
 // this explicit local action. Conflicting GitHub/Qual identities remain blocked.
-func (s *Spool) RequeueAfterReview(id string) error {
-	if !deliveryIDRE.MatchString(id) {
+func (s *Spool) RequeueAfterReview(id, reasonCode string) error {
+	if !deliveryIDRE.MatchString(id) ||
+		(reasonCode != "auth-restored" && reasonCode != "link-repaired" && reasonCode != "transient-verified") {
 		return ErrInvalid
 	}
 	return s.withLock("worker", func() error {
@@ -326,9 +537,34 @@ func (s *Spool) RequeueAfterReview(id string) error {
 				return err
 			}
 			if !exists || (item.State != "manual_review" && item.State != "blocked_auth" &&
-				!(item.State == "blocked_mapping" && item.LastErrorCode == "QUAL_WORK_ITEM_OR_THREAD_LINK_NOT_FOUND")) {
+				!(item.State == "blocked_mapping" && (item.LastErrorCode == "QUAL_WORK_ITEM_OR_THREAD_LINK_NOT_FOUND" ||
+					item.LastErrorCode == "PINNED_TARGET_CHANGED"))) {
 				return ErrConflict
 			}
+			// Reject reason codes for unrelated failure states.
+			switch item.State {
+			case "blocked_auth":
+				if reasonCode != "auth-restored" {
+					return ErrInvalid
+				}
+			case "blocked_mapping":
+				if reasonCode != "link-repaired" {
+					return ErrInvalid
+				}
+			case "manual_review":
+				if reasonCode != "transient-verified" {
+					return ErrInvalid
+				}
+			}
+			if len(item.History) >= MaxTransitions {
+				return ErrFull
+			}
+			item.History = append(item.History, Transition{
+				At: time.Now().UTC(), Kind: "operator_requeue",
+				State: item.State, Attempts: item.Attempts,
+				HTTPStatus: item.LastHTTPStatus, ErrorCode: item.LastErrorCode,
+				ReasonCode: reasonCode, OperatorUID: os.Getuid(),
+			})
 			item.State = "pending"
 			item.NextAttemptAt = time.Time{}
 			item.LastErrorCode = "MANUAL_RETRY_APPROVED"
@@ -339,6 +575,38 @@ func (s *Spool) RequeueAfterReview(id string) error {
 			return s.atomicWrite(path, item)
 		})
 	})
+}
+
+// CapacityStatus exposes only counts and saturation, never raw payloads or
+// credentials. The pilot fails closed rather than deleting old delivered
+// identities, which would permit replay after a retention window.
+type CapacityStatus struct {
+	PendingUsed    int  `json:"pending_used"`
+	PendingLimit   int  `json:"pending_limit"`
+	DeliveredUsed  int  `json:"delivered_used"`
+	DeliveredLimit int  `json:"delivered_limit"`
+	NearLimit      bool `json:"near_limit"`
+	IngressBlocked bool `json:"ingress_blocked"`
+}
+
+func (s *Spool) Capacity() (CapacityStatus, error) {
+	counts, err := s.Counts()
+	if err != nil {
+		return CapacityStatus{}, err
+	}
+	pending := 0
+	for state, count := range counts {
+		if state != "delivered" {
+			pending += count
+		}
+	}
+	delivered := counts["delivered"]
+	return CapacityStatus{
+		PendingUsed: pending, PendingLimit: MaxPending,
+		DeliveredUsed: delivered, DeliveredLimit: MaxDelivered,
+		NearLimit:      pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4,
+		IngressBlocked: pending >= MaxPending || delivered >= MaxDelivered,
+	}, nil
 }
 
 func (s *Spool) Counts() (map[string]int, error) {

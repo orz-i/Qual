@@ -54,6 +54,26 @@ type Delivery struct {
 	LastErrorCode    string    `json:"last_error_code,omitempty"`
 	NextAttemptAt    time.Time `json:"next_attempt_at,omitempty"`
 	DeliveredEventID string    `json:"delivered_event_id,omitempty"`
+	// Bound BEFORE the first network request. A mapping edit after a timeout
+	// must never silently send the same GitHub fact to another Qual target.
+	PinnedTarget *Target `json:"pinned_target,omitempty"`
+	// A bounded, software-append-only state and manual-requeue trail.
+	// It is not an independently authenticated Human approval or an OS
+	// immutable ledger when Human/PI share the same macOS UID.
+	History []Transition `json:"history,omitempty"`
+}
+
+// Transition retains previous retry and manual-review facts after the
+// delivery's current state changes. Reason codes are controlled, not free text.
+type Transition struct {
+	At          time.Time `json:"at"`
+	Kind        string    `json:"kind"`
+	State       string    `json:"state"`
+	Attempts    int       `json:"attempts"`
+	HTTPStatus  int       `json:"http_status,omitempty"`
+	ErrorCode   string    `json:"error_code,omitempty"`
+	ReasonCode  string    `json:"reason_code,omitempty"`
+	OperatorUID int       `json:"operator_uid,omitempty"`
 }
 
 func (d Delivery) stableIdentity() string {

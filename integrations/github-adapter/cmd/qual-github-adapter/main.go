@@ -52,12 +52,12 @@ func output(data any) {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue <delivery-id> --approve")
+		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue <delivery-id> --approve --reason-code <auth-restored|link-repaired|transient-verified>")
 	}
 	command := os.Args[1]
 	if command == "requeue" {
-		if len(os.Args) != 4 || os.Args[3] != "--approve" {
-			return fmt.Errorf("manual review requeue requires delivery ID and explicit --approve")
+		if len(os.Args) != 6 || os.Args[3] != "--approve" || os.Args[4] != "--reason-code" {
+			return fmt.Errorf("manual requeue requires delivery ID, --approve and --reason-code")
 		}
 	} else if len(os.Args) != 2 || (command != "serve" && command != "once" && command != "inspect") {
 		return fmt.Errorf("unknown command or unexpected argument")
@@ -68,16 +68,22 @@ func run() error {
 	}
 	switch command {
 	case "requeue":
-		if err := spool.RequeueAfterReview(os.Args[2]); err != nil {
+		if err := spool.RequeueAfterReview(os.Args[2], os.Args[5]); err != nil {
 			return fmt.Errorf("delivery not approved for retry; inspect the durable spool")
 		}
-		output(map[string]any{"requeued_after_manual_review": true, "delivery_id": os.Args[2], "raw_payload_retained": false})
+		output(map[string]any{"requeued_after_operator_review": true, "delivery_id": os.Args[2],
+			"reason_code": os.Args[5], "raw_payload_retained": false})
 	case "inspect":
 		counts, err := spool.Counts()
 		if err != nil {
 			return fmt.Errorf("spool status unreadable")
 		}
-		output(map[string]any{"repository_id": repo.ID, "repository": repo.FullName, "states": counts})
+		capacity, err := spool.Capacity()
+		if err != nil {
+			return fmt.Errorf("spool capacity unreadable")
+		}
+		output(map[string]any{"repository_id": repo.ID, "repository": repo.FullName,
+			"states": counts, "capacity": capacity})
 	case "once":
 		publisher := githubadapter.Publisher{
 			Spool: spool, Repository: repo, MapPath: os.Getenv("QUAL_GITHUB_MAPPING_FILE"),

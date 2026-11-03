@@ -53,6 +53,9 @@ run_scoped() (
       -run "$pattern" -v ./integration
   ) >"$log" 2>&1; then
     echo "Guarded integration group $group failed" >&2
+    # CI fixtures are synthetic. Keep output bounded and show only failing
+    # Go test locations; do not print credential/HTTP request bodies.
+    grep -E '^--- FAIL:|^    [^[:space:]]+_test.go:[0-9]+:|^FAIL' "$log" | tail -25 >&2 || true
     exit 6
   fi
   local passed skipped

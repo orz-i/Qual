@@ -102,7 +102,7 @@ func TestAuth401AndMapping404RemainDurable(t *testing.T) {
 			if requests.Load() != 1 {
 				t.Fatal("unexpected unauthorized retry")
 			}
-			if err := fresh.RequeueAfterReview(job.DeliveryID); err != nil {
+			if err := fresh.RequeueAfterReview(job.DeliveryID, map[int]string{401: "auth-restored", 404: "link-repaired"}[tc.status]); err != nil {
 				t.Fatalf("manual remediation could not requeue: %v", err)
 			}
 			if next, err := p.PublishOnce(context.Background()); err != nil || next.Attempted != 1 {
@@ -142,10 +142,10 @@ func TestTransientSixthAttemptGoesToManualReviewWithoutDataLoss(t *testing.T) {
 	if err != nil || next.Attempted != 0 || next.Skipped != 1 {
 		t.Fatal("manual_review was retried without review")
 	}
-	if err := reopened.RequeueAfterReview("not-a-delivery-uuid"); !errors.Is(err, ErrInvalid) {
+	if err := reopened.RequeueAfterReview("not-a-delivery-uuid", "transient-verified"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid manual requeue ID accepted: %v", err)
 	}
-	if err := reopened.RequeueAfterReview(job.DeliveryID); err != nil {
+	if err := reopened.RequeueAfterReview(job.DeliveryID, "transient-verified"); err != nil {
 		t.Fatal(err)
 	}
 	manual, err := reopened.Pending()
@@ -153,7 +153,7 @@ func TestTransientSixthAttemptGoesToManualReviewWithoutDataLoss(t *testing.T) {
 		manual[0].LastErrorCode != "MANUAL_RETRY_APPROVED" {
 		t.Fatal("explicit requeue destroyed attempts or failed to resume")
 	}
-	if err := reopened.RequeueAfterReview(job.DeliveryID); !errors.Is(err, ErrConflict) {
+	if err := reopened.RequeueAfterReview(job.DeliveryID, "transient-verified"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("unreviewed double requeue accepted: %v", err)
 	}
 }

@@ -232,7 +232,7 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if stats := doOnce(); stats["attempted"] != float64(0) || stats["skipped"] != float64(1) {
 		t.Fatalf("denied Event retried automatically without review: %v", stats)
 	}
-	resume := exec.Command(binary, "requeue", delivery, "--approve")
+	resume := exec.Command(binary, "requeue", delivery, "--approve", "--reason-code", "auth-restored")
 	resume.Env = environment
 	if result, err := resume.CombinedOutput(); err != nil {
 		t.Fatalf("explicit reviewed requeue refused: %v output_bytes=%d", err, len(result))
@@ -349,9 +349,19 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, "UPDATE qual.credentials SET revoked_at=now() WHERE token_sha256=$1", hash[:]); err != nil {
 		t.Fatal(err)
 	}
+	// This MUST be a genuinely new signed GitHub fact: the same original
+	// signed payload under a new unsigned delivery UUID is a replay, not a
+	// second event. Change the action + timestamp before signing.
+	var changed map[string]any
+	if err := json.Unmarshal(payload, &changed); err != nil {
+		t.Fatal(err)
+	}
+	changed["action"] = "edited"
+	changed["pull_request"].(map[string]any)["updated_at"] = time.Now().UTC().Add(-time.Second).Format(time.RFC3339)
+	payload, _ = json.Marshal(changed)
 	newDelivery := uuid.NewString()
-	if s, _ := webhook(newDelivery, secret); s != 202 {
-		t.Fatalf("second synthetic delivery HTTP%d", s)
+	if s, body := webhook(newDelivery, secret); s != 202 || body["new"] != true {
+		t.Fatalf("genuinely new synthetic delivery HTTP%d %v", s, body)
 	}
 	if stats := doOnce(); stats["blocked_auth"] != float64(1) {
 		t.Fatalf("revoked Adapter credential was still trusted: %v", stats)

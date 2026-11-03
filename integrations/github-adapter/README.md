@@ -12,7 +12,7 @@
 - 只有单独创建并由 Human 授予 Qual `event:write` Credential Scope **和 Project Allow** 的 Integration Principal 可上报。**不要修改当前 PI/人类用户的凭据**。Connector 不含 `work:write`、`work:review`、`run:report`，不会通过 GitHub Event 自动更改 WorkItem、创建 Thread/Link、推进状态或记录 Agent Run。
 - Adapter 队列及关联配置的**父目录必须由运行该进程的 OS 用户拥有，且不能被 Group/Other 写入**；队列目录 0700、记录/映射文件 0600。仅保护子目录是不够的，父目录可写会允许替换攻击。
 - `QUAL_GITHUB_MAPPING_FILE` 为由 Human 预先审核并设置 0600 的 JSON，明确将受信任的 `owner/repo/pull/N` 或 `owner/repo/issues/N` → 已存在同 Project WorkItem UUID + Thread UUID 关联；不得按标题猜测。没有映射只在本地保留 `blocked_mapping`，向 Qual 的 POST 次数为零。**一个 GitHub Delivery ID 最多对应一个 WorkItem**；真正多 WorkItem 场景需独立设计来源指派，不要伪造第二个 Delivery ID。
-- `once` 为显式一次性批次（可由外部 Operator 作业调度），不是内置 Agent 或后台自治执行引擎。401/403 保留 `blocked_auth`，已确认目标关联不存在的 404 保留 `blocked_mapping`，这些错误**不会自动重复请求**，必须由有权维护者核对权限/关联并通过 `requeue --approve` 明确恢复；尚未建立本地批准映射的事件也保留 `blocked_mapping`，在映射文件得到有效批准后才首次上报。409 保留 `conflict` 并隔离，不提供自动重排；5xx/网络故障指数退避，六次后 `manual_review`；同样需要人工审核再明确重排。所有历史 Attempts 和 Event ID 保留在持久队列。所有状态和已有 Event ID 保留在持久队列。
+- `once` 为显式一次性批次（可由外部 Operator 作业调度），不是内置 Agent 或后台自治执行引擎。401/403 保留 `blocked_auth`，已确认目标关联不存在的 404 保留 `blocked_mapping`，这些错误**不会自动重复请求**，必须由有权维护者核对权限/关联并通过 `requeue --approve --reason-code <code>` 明确恢复；尚未建立本地批准映射的事件也保留 `blocked_mapping`，在映射文件得到有效批准后才首次上报。409 保留 `conflict` 并隔离，不提供自动重排；5xx/网络故障指数退避，六次后 `manual_review`；同样需要人工审核再明确重排。所有历史 Attempts 和 Event ID 保留在持久队列。所有状态和已有 Event ID 保留在持久队列。
 - `QUAL_API_URL` 被严格限制为 `http://127.0.0.1:<非特权端口>`；HTTP 客户端**不自动跟随重定向**，不能将 Integration Bearer 发送到非 loopback 域名。
 
 ## 本机验证入口
@@ -41,7 +41,7 @@ qual-github-adapter serve
 # 验签与落盘由 serve 完成；只有经过权限和映射独立配置后：
 qual-github-adapter once
 # Only after reviewing and resolving the incident:
-qual-github-adapter requeue '<github-delivery-uuid>' --approve
+qual-github-adapter requeue '<github-delivery-uuid>' --approve --reason-code auth-restored
 ```
 
 已审核的关联文件示例（只是**假 UUID 示例，无法指向真实 WorkItem**）：
@@ -69,3 +69,12 @@ qual-github-adapter requeue '<github-delivery-uuid>' --approve
 公开 CI 的 `ci_goose17_guarded.sh` 分别使用专属 `qual30_event_*` 和 `qual36_adapter_*` Goose17 测试库执行 Event 核心及独立 Adapter 端到端两条回归，共计 19 项受保护的真实测试（默认/正式 `qual` 永不运行合成测试）。本机真实运行 `go test -race -tags integration -run '^TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI$' -count=1` 已 Passed；这是**隔离合成端到端测试**，不冒充真实 GitHub App 交付、真实 PI 会话或公网安全验收。
 
 **未完成**：真实 GitHub App 安装、真实 Webhook Secret/Ingress 和来自 GitHub 的实际 Delivery、人工审核的真实 WorkItem–Thread 映射、专用真实 Integration Principal 的最小授权，以及一个真实 GitHub Delivery → Qual Event → 外部 PI Run/Test/Evidence 的运营闭环。需按 QUAL-36/37 后续验证，不能因为隔离合成测试通过就把工作项 Done。
+
+
+## 独立审查后的安全整改（PR #1，2026-11-03）
+
+- **签名重放边界**：GitHub HMAC 只覆盖 Body，不覆盖 X-GitHub-Delivery。持久队列在跨进程锁内检查整个原始 Body 的 SHA-256，若相同已签名 Body 被带不同 Delivery UUID 投递，只应得到 202/new=false，不得创建第二条来源事实或消耗更多队列配额。对同一个 UUID 变更了 Body 的情形仍拒绝 409。
+- **崩溃恢复**：对 pending 与 delivered 中的同 Delivery ID 重叠记录，以已同步的 Delivered 为权威，重启时校验元数据并清理残留 Pending；若数据相互冲突则拒绝恢复。首次 HTTP POST 前持久固定已审批的 Project/WorkItem/Thread UUID，既有事件不得随映射修改静默跨项目重发。保留已有 Event ID。
+- **人工重试协议与能力边界**：requeue 要求 --approve 与 --reason-code，允许 auth-restored（blocked_auth）、link-repaired（blocked_mapping）或 transient-verified（manual_review）。已有失败状态、HTTP 状态、原因码、时间及执行者 OS UID 按顺序持久留存（最多 24 个状态变更，超限拒绝写入）。这里仍是同一个受信任 OS 账户的操作约定，**不具备独立 Human Principal 的强制鉴权或 OS 不可篡改审计**；Human 与 PI 共享 macOS UID 时不能据此宣称独立安全审批。
+- **容量可见性但尚无安全回收**：inspect 输出 capacity 的 pending/delivered 用量、上限、80% 的 near_limit 及满载 ingress_blocked。容量仍严格限制为 1,000 个 Pending 与 10,000 个 Delivered，满载新入站 503。尚无安全保留墓碑和去重语义的已投递记录归档/回收，不得手动直接删除 Delivered 并继续声称重放安全；本机 Adapter 不能据此宣称长期无人值守生产就绪。
+- **PR 校验可信度**：质量门禁改由受保护目标分支的 pull_request_target 工作流运行，绝不检出/执行 PR Head 代码；它只在此规则已经存在于默认分支之后才真正生效。首次引入该工作流的 PR #1 不受该新门禁的自我保护，仍需独立审查。
