@@ -1,0 +1,19 @@
+name: PR description quality
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  description:
+    name: Structured PR evidence and Markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PR description validator with synthetic tests
+        run: python3 -B -m unittest discover -s scripts/tests -p test_pr_description_quality.py -v
+      - name: Validate this PR's actual GitHub event body
+        run: python3 -B scripts/ops/check_pr_description.py "$GITHUB_EVENT_PATH"
