@@ -1458,6 +1458,38 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/projects/{projectID}/attention:
+    get:
+      tags: [WorkItems]
+      operationId: listProjectAttention
+      summary: Bounded read-only attention items derived from existing Review, AgentRun and Event facts
+      description: |
+        Requires effective work:read. Project-scoped, no raw Audit or private Artifact
+        and no automatic approvals, WorkItem status changes or agent execution.
+        At most one highest-urgency item per WorkItem; review needs_work and
+        explicit re-submission retain the exact existing ReviewQueue semantics.
+        AgentRun blocked/stale/unknown and allowlisted external needs_input /
+        attention.required Events are only untrusted attention hints. Stale
+        is calculated from server last_seen, never from claimed source time.
+        Event hints appear for up to seven days while the WorkItem has not
+        been updated after receipt; they never assert a Human decision.
+        Offset pagination is non-snapshot and capped at 500 ordered items.
+        For full history use WorkItem/Thread/AgentRun scoped endpoints.
+        This route is registered only with Goose17's requisite tables.
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 30}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 450, default: 0}}
+      responses:
+        '200':
+          description: Ranked project-scoped attention facts with bounded pagination
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttentionPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /api/v1/projects/{projectID}/external-events:
     parameters:
       - $ref: '#/components/parameters/ProjectID'
@@ -2950,6 +2982,40 @@ components:
           items: {$ref: '#/components/schemas/ReviewQueueEntry'}
         has_more: {type: boolean}
         next_offset: {type: integer, minimum: 1}
+    AttentionItem:
+      type: object
+      additionalProperties: false
+      required: [work_item_id, key, title, status, priority, assignee_id,
+        reason, source_kind, source_id, source_label, observed_at, hint_only]
+      properties:
+        work_item_id: {type: string, format: uuid}
+        key: {type: string}
+        title: {type: string}
+        status: {$ref: '#/components/schemas/Status'}
+        priority: {$ref: '#/components/schemas/Priority'}
+        assignee_id: {type: [string, 'null'], format: uuid}
+        reason:
+          type: string
+          enum: [review_needs_work, review_awaiting, review_ready, run_blocked,
+            run_stale, run_unknown, event_needs_input]
+        source_kind: {type: string, enum: [review, agent_run, external_event]}
+        source_id: {type: string, format: uuid, description: 'Real immutable source ID, or WorkItem ID when no Reviewer record yet'}
+        source_label: {type: string, description: 'Source outcome/provider label, not an authenticated actor'}
+        observed_at: {type: string, format: date-time, description: 'Server-persisted observation timestamp used for ordering'}
+        source_at: {type: string, format: date-time, description: 'Optional untrusted source-reported timestamp; never used for ordering'}
+        hint_only: {type: boolean, description: 'True for external Run/Event clues; cannot authorize a business decision'}
+    AttentionPage:
+      type: object
+      additionalProperties: false
+      required: [items, has_more, paging_limited]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AttentionItem'}
+        has_more: {type: boolean}
+        next_offset: {type: integer, minimum: 1, maximum: 450}
+        paging_limited: {type: boolean, description: 'True when a further page exceeds the bounded 500-item projection'}
     WorkContextSummary:
       type: object
       additionalProperties: false

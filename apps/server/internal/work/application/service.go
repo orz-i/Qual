@@ -69,14 +69,16 @@ type CompletionRepository interface {
 }
 
 type Service struct {
-	Identity          identity.Authenticator
-	Work              Repository
-	Roles             RolesRepository
-	Completion        CompletionRepository
-	ReviewPolicy      ProjectReviewPolicyRepository
-	AcceptanceHistory AcceptanceHistoryRepository
-	WorkReviewPolicy  WorkReviewPolicyRepository
-	Clock             func() time.Time
+	Identity            identity.Authenticator
+	Work                Repository
+	Roles               RolesRepository
+	Attention           AttentionRepository
+	AttentionStaleAfter time.Duration
+	Completion          CompletionRepository
+	ReviewPolicy        ProjectReviewPolicyRepository
+	AcceptanceHistory   AcceptanceHistoryRepository
+	WorkReviewPolicy    WorkReviewPolicyRepository
+	Clock               func() time.Time
 }
 
 func (s Service) now() time.Time {
