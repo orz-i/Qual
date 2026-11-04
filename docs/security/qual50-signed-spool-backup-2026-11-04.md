@@ -40,3 +40,8 @@ This restore does **not** automatically switch the configured Adapter, restart a
 The external Go module tests run Go Race/Vet on signed backup/restore, wrong/tampered key/tag/ZIP, destination overwrite refusal, signed malicious ZIP paths, replay of archived records after isolated restore and true filesystem disk probes with injected low-space failure. A separate protected Goose17 integration test builds actual Adapter binaries, records a locally synthesized signed event to disposable PostgreSQL/S3, archives, runs the signed backup/restore as distinct Adapter subprocesses, reopens restored private spool in a second listener, verifies old signed bytes under a different Delivery UUID are deduplicated and confirms no additional Qual Event/Audit. No default Qual DB mutation.
 
 The source, test run, GitHub CI and official Qual artifact evidence must remain explicitly separated, with the **same actual commit SHA** in each reference.
+
+
+## QUAL-51 恢复前默认隔离
+
+恢复后的 owner-only Spool 现在默认带有两份一致、持久化的恢复隔离标记：read-only inspect 可查询，serve/once/Enqueue/PinTarget/Update/Requeue/Archive 都必须拒绝，且无本地自批准解锁命令。合法的 HMAC 快照仍不能证明未来事件是否丢失。实际 T0 备份、T1 新入站事件真实写入隔离 PostgreSQL、T2 恢复旧快照时的安全拒绝过程和真实限制见 [QUAL-51 文档](qual51-restored-snapshot-quarantine-2026-11-04.md)。

@@ -19,3 +19,10 @@ This task does **not** invent a trustworthy external ledger or claim to have rec
 ## Evidence and scope
 
 The original pinned source and adversarial tests reside in the local ignored audit path tmp/audits/pr2-independent-20261104. No real Operator key, default Qual PG/S3 content, GitHub Webhook or production service was read or written. The remediation is checked separately using Go Race/Vet, Darwin tests, Linux cross-compilation and guarded disposable Goose17/PostgreSQL/S3 integration. Existing real TestAttempt/CI evidence stays immutable; every new run is bound to the actual SHA. A reviewer with a different real authorized Principal must assess the final PR and real Human Operator's backup/freshness/cutover procedure.
+
+
+## QUAL-51 部分整改续报（2026-11-04）
+
+原来 valid-older-signed-snapshot 可复现的 T0/T1/T2 重放缺口仍是**真实独立来源新鲜度未满足**。后续源码候选已新增不可由本地 CLI --approve 清除的默认 Recovery Quarantine：恢复在未公开的暂存目录里首先写入两份 0600/owner-only 隔离标记并 fsync，OpenSpool、Handler 和 Publisher 等入口在对账前 fail closed；read-only inspect 显示恢复源 SHA 和状态。实际 Goose17 隔离测试验证 T1 后另一条真实 PG Event 已写入、旧 T0 签名快照的 serve 和 once 均无法启动／投递，Event/Audit 只有既定 T0/T1 两条。完整说明见 [QUAL-51 受控恢复隔离及局限](qual51-restored-snapshot-quarantine-2026-11-04.md)。
+
+这一补丁只阻断未经核验的**使用**，不代表已找到可信跨主体事件水位，更不能对抗与该 Agent 共享 OS UID 者同时篡改全部文件。旧本机 PI 对抗审查仍不是 GitHub 第二 Principal 的独立批准。

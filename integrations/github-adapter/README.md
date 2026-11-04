@@ -112,3 +112,10 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 - 已核实原 Restore 使用先 Lstat 再普通 Rename，在底层 rename 系统调用前存在较窄目标目录竞争窗口。现在 Darwin 调用 RENAME_EXCL、Linux 调用 RENAME_NOREPLACE，原子拒绝已存在的目录、普通文件或符号链接；不支持的平台必须 fail closed。Do not conflate Go os.Rename's preliminary directory check with an atomic nonreplacement guarantee.
 - 备份签名验证不代表快照新鲜度。恢复成功输出 snapshot_freshness_verified=false 与 requires_source_reconciliation=true。使用早于某次 Webhook 投递的有效签名快照恢复，会丢失晚于备份产生的去重墓碑；恢复前后不能仅凭 HMAC 就安全切换接收器。实际已通过合成 HMAC 对抗测试复现，仍是正式上线阻断项。
 - 详细证据、修复验证与未解决风险参见 [PR #2 对抗复核](../../docs/security/pr2-atomic-restore-audit-2026-11-04.md)。
+
+
+### QUAL-51：已签名旧快照默认恢复隔离（不可当作完整生产恢复）
+
+从本阶段候选代码起，RestoreSignedBackup 在对外发布之前为每个恢复队列持久写入双份 owner-only 0600 恢复标记，强制 Quarantined 状态；一个标记缺失、权限错误或内容不匹配，OpenSpool 会拒绝。受控 inspect 可查看 recovery 和 capacity.ingress_blocked，serve/once、Enqueue/PinTarget/Update、人工重排和归档都会 fail closed。即使新的操作员将已恢复数据再次备份并恢复，它也仍然被隔离。本地无 --approve 绕过开关，不接触 Human-only HMAC。
+
+这仍不是完整的可信来源账本对账；同 OS UID 可篡改双方标记、旧版二进制可忽略它。生产激活前必须完成由不同真实授权主体维护的完整来源事实水位／独立核验和部署隔离。详见 [QUAL-51 恢复隔离设计与剩余阻断项](../../docs/security/qual51-restored-snapshot-quarantine-2026-11-04.md)。
