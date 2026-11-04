@@ -15,7 +15,9 @@ After an operator-controlled transfer/storage of BOTH the ZIP and its .sig file 
 
     qual-github-adapter restore --file /owner-only-backups/adapter-2026-11-04.zip --into /owner-only-restore/new-adapter-spool --approve
 
-This restore does **not** automatically switch the configured Adapter, restart any service, change the mapping/authorization, submit Qual Events, or reopen production ingress. A real authorized Operator must validate recovered event identities and target mappings, then independently decide on recovery/cutover. Manual restore of a production Operator snapshot has **not** been performed.
+This restore does **not** automatically switch the configured Adapter, restart any service, change the mapping/authorization, submit Qual Events, or reopen production ingress. The CLI explicitly returns snapshot_freshness_verified=false and requires_source_reconciliation=true. A real authorized Operator must reconcile source events accepted **after** the snapshot against an independently trusted GitHub delivery/Qual ledger and target mapping, then independently decide on recovery/cutover. Manual restore of a production Operator snapshot has **not** been performed.
+
+**Critical rollback limitation (reproduced in an isolated pinned-source technical audit):** HMAC authenticates snapshot integrity, **not freshness**. A completely valid, earlier backup may omit a GitHub delivery that was accepted **after** the backup; restoring that older backup and replaying the later valid HMAC-signed Body under another unsigned Delivery ID creates a new Pending fact. Local signature verification alone cannot prevent this. Do NOT activate a restored spool as a production webhook listener/worker without independent external event reconciliation, a trusted monotonic high-watermark/checkpoint or an equivalent server-side deduplication guarantee. This is a remaining release blocker and is not fixed by atomic rename.
 
 ## Integrity design
 

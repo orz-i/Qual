@@ -105,3 +105,10 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 - 增加显式本机 Operator backup --out <fresh-absolute.zip> --approve 和 restore --file <signed.zip> --into <new-directory> --approve；只使用由可信 Operator **独立安全注入**的 QUAL_GITHUB_BACKUP_HMAC_KEY，不得复用 GitHub Webhook/Qual PI/Human/Operator PostgreSQL HMAC Key。签名为 HMAC-SHA256 完整性，**不加密**备份。恢复只到不存在的新目录，不自动替换正式 Adapter、授权或启动外部 PI。
 - 只备份已脱敏的 Pending/Delivered/Archived/ArchiveIndex；不会复制原始第三方 Webhook Body 或秘密凭据。备份/恢复都会失败关闭而不毁损原有身份与失败历史；官方 Human-only Key 的真实部署、可信外部备份与隔离恢复演练仍 Pending。
 - [QUAL-50 磁盘保护](../../docs/security/qual50-adapter-disk-watermark-2026-11-04.md) 与 [安全签名归档/隔离恢复](../../docs/security/qual50-signed-spool-backup-2026-11-04.md) 分别记录实际测试、性能和安全边界。
+
+
+### 2026-11-04 PR #2 技术对抗复核补丁
+
+- 已核实原 Restore 使用先 Lstat 再普通 Rename，在底层 rename 系统调用前存在较窄目标目录竞争窗口。现在 Darwin 调用 RENAME_EXCL、Linux 调用 RENAME_NOREPLACE，原子拒绝已存在的目录、普通文件或符号链接；不支持的平台必须 fail closed。Do not conflate Go os.Rename's preliminary directory check with an atomic nonreplacement guarantee.
+- 备份签名验证不代表快照新鲜度。恢复成功输出 snapshot_freshness_verified=false 与 requires_source_reconciliation=true。使用早于某次 Webhook 投递的有效签名快照恢复，会丢失晚于备份产生的去重墓碑；恢复前后不能仅凭 HMAC 就安全切换接收器。实际已通过合成 HMAC 对抗测试复现，仍是正式上线阻断项。
+- 详细证据、修复验证与未解决风险参见 [PR #2 对抗复核](../../docs/security/pr2-atomic-restore-audit-2026-11-04.md)。
