@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAgentRunReports, useWorkAgentRuns } from '@/features/work/run-observability-api'
 import { externalReportPresentation, externalRunPresentation } from '@/features/work/run-observability-utils'
+import { readableFactRows } from '@/features/work/read-facts'
 
 function Problem({ message }: { message?: string }) {
   return message ? <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{message}</p> : null
@@ -14,7 +15,7 @@ function RunReports({ projectID, runID, canReadEvidence }: {
   projectID: string; runID: string; canReadEvidence: boolean
 }) {
   const query = useAgentRunReports(projectID, runID)
-  const reports = query.data?.pages.flatMap((page) => page.items) ?? []
+  const reports = readableFactRows(true, query.status, query.data?.pages)
   return (
     <div className="mt-3 rounded-lg border bg-muted/25 p-3">
       <h4 className="text-sm font-semibold">历史报告（已加载 {reports.length} 条）</h4>
@@ -43,7 +44,7 @@ function RunReports({ projectID, runID, canReadEvidence }: {
           </li>
         ))}
       </ol>
-      {query.hasNextPage && <Button type="button" size="sm" variant="outline" className="mt-3"
+      {query.isSuccess && query.hasNextPage && <Button type="button" size="sm" variant="outline" className="mt-3"
         disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
         {query.isFetchingNextPage ? '读取中…' : '加载更早报告'}
       </Button>}
@@ -56,7 +57,7 @@ export function WorkRunObservability({ projectID, itemID, canRead, canReadEviden
 }) {
   const query = useWorkAgentRuns(projectID, itemID, canRead)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
-  const runs = query.data?.pages.flatMap((page) => page.items) ?? []
+  const runs = readableFactRows(canRead, query.status, query.data?.pages)
   return (
     <Card id="work-agent-runs" className="scroll-mt-24">
       <CardHeader>
@@ -107,7 +108,7 @@ export function WorkRunObservability({ projectID, itemID, canRead, canReadEviden
                 )
               })}
             </ul>
-            {query.hasNextPage && <Button variant="outline" type="button" size="sm" disabled={query.isFetchingNextPage}
+            {query.isSuccess && query.hasNextPage && <Button variant="outline" type="button" size="sm" disabled={query.isFetchingNextPage}
               onClick={() => void query.fetchNextPage()}>{query.isFetchingNextPage ? '读取中…' : '加载更多 Run'}</Button>}
             {query.isSuccess && <p className="text-xs text-muted-foreground">已加载 {runs.length} 条 Run，非全量证明；报告来源需独立审查。</p>}
           </>

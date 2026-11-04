@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useThreadWorkItems, useWorkExternalEvents, useWorkThreads } from '@/features/work/external-timeline-api'
 import { externalEventTimeHint, safeThreadURL } from '@/features/work/external-timeline-utils'
+import { readableFactRows } from '@/features/work/read-facts'
 
 function Problem({ message }: { message?: string }) {
   return message ? <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{message}</p> : null
@@ -13,7 +14,7 @@ function Problem({ message }: { message?: string }) {
 
 function ThreadBacklinks({ projectID, threadID }: { projectID: string; threadID: string }) {
   const query = useThreadWorkItems(projectID, threadID, true)
-  const items = query.data?.pages.flatMap((page) => page.items) ?? []
+  const items = readableFactRows(true, query.status, query.data?.pages)
   return (
     <div className="mt-3 rounded-lg border bg-muted/30 p-3">
       <p className="mb-2 text-xs font-medium">此 Thread 在本项目的工作项关联（已加载 {items.length} 条）</p>
@@ -30,7 +31,7 @@ function ThreadBacklinks({ projectID, threadID }: { projectID: string; threadID:
           </li>
         ))}
       </ul>
-      {query.hasNextPage && <Button size="sm" variant="outline" type="button" disabled={query.isFetchingNextPage}
+      {query.isSuccess && query.hasNextPage && <Button size="sm" variant="outline" type="button" disabled={query.isFetchingNextPage}
         className="mt-3" onClick={() => void query.fetchNextPage()}>
         {query.isFetchingNextPage ? '读取中…' : '加载更多关联工作项'}
       </Button>}
@@ -43,8 +44,8 @@ export function WorkExternalTimeline({ projectID, itemID, canRead }: { projectID
   const [expandedThread, setExpandedThread] = useState<string | null>(null)
   const threads = useWorkThreads(projectID, itemID, canRead)
   const events = useWorkExternalEvents(projectID, itemID, canRead)
-  const threadRows = threads.data?.pages.flatMap((page) => page.items) ?? []
-  const eventRows = events.data?.pages.flatMap((page) => page.items) ?? []
+  const threadRows = readableFactRows(canRead, threads.status, threads.data?.pages)
+  const eventRows = readableFactRows(canRead, events.status, events.data?.pages)
 
   return (
     <Card id="work-external-timeline" className="scroll-mt-24">
@@ -90,7 +91,7 @@ export function WorkExternalTimeline({ projectID, itemID, canRead }: { projectID
                   )
                 })}
               </ul>
-              {threads.hasNextPage && <Button type="button" size="sm" variant="outline" disabled={threads.isFetchingNextPage}
+              {threads.isSuccess && threads.hasNextPage && <Button type="button" size="sm" variant="outline" disabled={threads.isFetchingNextPage}
                 onClick={() => void threads.fetchNextPage()}>{threads.isFetchingNextPage ? '读取中…' : '加载更多 Thread'}</Button>}
               {threads.isSuccess && <p className="text-xs text-muted-foreground">已加载 {threadRows.length} 条关联；不代表项目中全部来源。</p>}
             </section>
@@ -127,7 +128,7 @@ export function WorkExternalTimeline({ projectID, itemID, canRead }: { projectID
                   )
                 })}
               </ol>
-              {events.hasNextPage && <Button type="button" size="sm" variant="outline" disabled={events.isFetchingNextPage}
+              {events.isSuccess && events.hasNextPage && <Button type="button" size="sm" variant="outline" disabled={events.isFetchingNextPage}
                 onClick={() => void events.fetchNextPage()}>{events.isFetchingNextPage ? '读取中…' : '加载更多事件'}</Button>}
               {events.isSuccess && <p className="text-xs text-muted-foreground">已加载 {eventRows.length} 条不可变事件记录。</p>}
             </section>
