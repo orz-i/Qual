@@ -277,9 +277,134 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if stats := doOnce(); stats["attempted"] != float64(0) {
 		t.Fatalf("archived/replayed event invoked Qual again: %v", stats)
 	}
+	// QUAL-50: use a SEPARATE Operator-only synthetic HMAC key to snapshot
+	// the complete durable Adapter spool. No real Human or Qual backup key
+	// is read; the signed bundle is restored only to a new isolated path.
+	backupZip := filepath.Join(t.TempDir(), "qual50-adapter-signed.zip")
+	restoredDir := filepath.Join(t.TempDir(), "qual50-restored")
+	backupKey := "synthetic-qual50-independent-signature-key-2026-11-04"
+	operatorEnv := append(append([]string{}, environment...), "QUAL_GITHUB_BACKUP_HMAC_KEY="+backupKey)
+	externalBackup := exec.Command(binary, "backup", "--out", backupZip, "--approve")
+	externalBackup.Env = operatorEnv
+	backupOut, err := externalBackup.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real external Operator-only signed backup refused: %v output_bytes=%d", err, len(backupOut))
+	}
+	var backupReceipt map[string]any
+	if err := json.Unmarshal(backupOut, &backupReceipt); err != nil ||
+		backupReceipt["signed_backup_ready"] != true || backupReceipt["record_count"] != float64(2) {
+		t.Fatalf("real signed snapshot omitted archive SHA index or receipt: %v %v", backupReceipt, err)
+	}
+	// The snapshot was taken at T0. At T1, while the original adapter is
+	// still legitimately active, accept and deliver a SECOND signed fact to
+	// real disposable PostgreSQL. The earlier snapshot necessarily lacks
+	// its delivery ID and hash, even though its HMAC remains valid.
+	var later map[string]any
+	if err := json.Unmarshal(payload, &later); err != nil {
+		t.Fatal(err)
+	}
+	later["action"] = "edited"
+	later["pull_request"].(map[string]any)["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	payload, _ = json.Marshal(later)
+	laterDeliveryID := uuid.NewString()
+	if status, body := webhook(laterDeliveryID, secret); status != 202 || body["new"] != true {
+		t.Fatalf("T1 legitimately new signed fact not queued: HTTP%d %v", status, body)
+	}
+	if stats := doOnce(); stats["delivered"] != float64(1) {
+		t.Fatalf("T1 did not persist a new real Qual Event after snapshot: %v", stats)
+	}
+	if status, body := webhook(uuid.NewString(), secret); status != 202 || body["new"] != false {
+		t.Fatalf("source T1 duplicate was not deduplicated: HTTP%d %v", status, body)
+	}
+	externalRestore := exec.Command(binary, "restore", "--file", backupZip, "--into", restoredDir, "--approve")
+	externalRestore.Env = operatorEnv
+	restoreOut, err := externalRestore.CombinedOutput()
+	if err != nil {
+		t.Fatalf("external isolated signed restore refused: %v output_bytes=%d", err, len(restoreOut))
+	}
+	var restoreReceipt map[string]any
+	if err := json.Unmarshal(restoreOut, &restoreReceipt); err != nil ||
+		restoreReceipt["isolated_restore_verified"] != true ||
+		restoreReceipt["record_count"] != float64(2) ||
+		restoreReceipt["archive_sha256"] != backupReceipt["archive_sha256"] ||
+		restoreReceipt["snapshot_freshness_verified"] != false ||
+		restoreReceipt["requires_source_reconciliation"] != true ||
+		restoreReceipt["recovery_quarantined"] != true ||
+		restoreReceipt["ingress_allowed"] != false ||
+		restoreReceipt["qual_publishing_allowed"] != false {
+		t.Fatalf("restored spool did not retain exact signed bytes: %v %v", restoreReceipt, err)
+	}
+	restoredEnv := append(append([]string{}, environment...), "QUAL_GITHUB_SPOOL_DIR="+restoredDir)
+	inspector := exec.Command(binary, "inspect")
+	inspector.Env = restoredEnv
+	inspectOut, err := inspector.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restored spool rejected by separate inspect process: %v output_bytes=%d", err, len(inspectOut))
+	}
+	var inspect map[string]any
+	if err := json.Unmarshal(inspectOut, &inspect); err != nil {
+		t.Fatal(err)
+	}
+	states, ok := inspect["states"].(map[string]any)
+	if !ok || states["archived"] != float64(1) || states["delivered"] != float64(0) {
+		t.Fatalf("restored archive/index facts missing: %v", inspect)
+	}
+	// T2 has only the older, valid HMAC-authenticated snapshot. A second
+	// process must NOT start a restored webhook listener, even if the
+	// Operator provides a valid GitHub HMAC secret; it has no trusted T1
+	// source watermark and cannot safely accept *any* new deliveries.
+	recovery, ok := inspect["recovery"].(map[string]any)
+	if !ok || recovery["quarantined"] != true ||
+		recovery["requires_source_reconciliation"] != true ||
+		inspect["ingress_allowed"] != false ||
+		inspect["qual_publishing_allowed"] != false {
+		t.Fatalf("quarantined restored spool not clearly read-only: %v", inspect)
+	}
+	secondListener := exec.Command(binary, "serve")
+	secondListener.Env = append(restoredEnv, "QUAL_GITHUB_LISTEN_ADDR=127.0.0.1:18991")
+	secondOutput, secondErr := secondListener.CombinedOutput()
+	if secondErr == nil {
+		t.Fatal("restored T0 spool unexpectedly started an active webhook receiver")
+	}
+	if len(secondOutput) == 0 {
+		t.Fatal("restored receiver did not report an error")
+	}
+	restoredOnce := exec.Command(binary, "once")
+	restoredOnce.Env = restoredEnv
+	replayedOut, err := restoredOnce.CombinedOutput()
+	if err == nil {
+		t.Fatal("restored T0 spool allowed Qual writer before source reconciliation")
+	}
+	if len(replayedOut) == 0 {
+		t.Fatal("restored worker did not fail closed with a diagnostic")
+	}
+	// QUAL-51 defense in depth: stripping BOTH local quarantine markers
+	// from the stale T0 snapshot must not silently certify it as a fresh
+	// source. A restored ZIP never carries active-origin evidence; a source
+	// that actually predates the T1 fact cannot regain ingress or EventWrite.
+	for _, marker := range []string{"recovery-quarantine.json", "recovery-witness.json"} {
+		if err := os.Remove(filepath.Join(restoredDir, marker)); err != nil {
+			t.Fatalf("remove test-only quarantine witness: %v", err)
+		}
+	}
+	for _, action := range []string{"inspect", "serve", "once"} {
+		command := exec.Command(binary, action)
+		command.Env = append(restoredEnv, "QUAL_GITHUB_LISTEN_ADDR=127.0.0.1:18991")
+		out, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("stripped-quarantine old source silently became active via %s", action)
+		}
+		if len(out) == 0 {
+			t.Fatalf("stripped-quarantine %s returned no fail-closed diagnostic", action)
+		}
+	}
+	// The real authoritative Qual Event/Audit facts must still be unchanged.
+	// No further Qual API or database action is caused by this quarantined
+	// T0 snapshot, despite the original source having persisted T1 after it.
+	// This is *not* proof of backup freshness; it is active refusal.
 	var eventAudits int
-	if err := f.pool.QueryRow(ctx, "SELECT count(*) FROM qual.audit_records WHERE project_id=$1 AND operation='external_event.recorded'", f.project).Scan(&eventAudits); err != nil || eventAudits != 1 {
-		t.Fatalf("Event redelivery fabricated extra audit: %d %v", eventAudits, err)
+	if err := f.pool.QueryRow(ctx, "SELECT count(*) FROM qual.audit_records WHERE project_id=$1 AND operation='external_event.recorded'", f.project).Scan(&eventAudits); err != nil || eventAudits != 2 {
+		t.Fatalf("T0 and T1 should be exactly two real event audits, restored spool none: %d %v", eventAudits, err)
 	}
 	code, current, _ := request(t, "GET", f.url(f.project)+"/"+workID, f.agent, "", "", nil)
 	if code != 200 || current["status"] != "backlog" || current["version"] != float64(2) {
@@ -385,8 +510,8 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if stats := doOnce(); stats["blocked_auth"] != float64(1) {
 		t.Fatalf("revoked Adapter credential was still trusted: %v", stats)
 	}
-	if err := f.pool.QueryRow(ctx, "SELECT count(*) FROM qual.external_events WHERE project_id=$1", f.project).Scan(&events); err != nil || events != 1 {
-		t.Fatalf("revoked integration wrote another Event: %d %v", events, err)
+	if err := f.pool.QueryRow(ctx, "SELECT count(*) FROM qual.external_events WHERE project_id=$1", f.project).Scan(&events); err != nil || events != 2 {
+		t.Fatalf("revoked integration wrote Event beyond the two authorized T0/T1 facts: %d %v", events, err)
 	}
 	t.Log("QUAL36 isolated synthetic transport PASS: signed GitHub PR #1 -> durable spool -> authorized Goose17 Event -> external PI Claim -> AgentRun/Ready S3/TestAttempt; no automatic Done")
 }

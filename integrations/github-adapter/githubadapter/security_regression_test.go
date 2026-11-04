@@ -190,7 +190,8 @@ func TestCapacityInspectReportsBoundedUsageWithoutDeletion(t *testing.T) {
 	}
 	if capacity.PendingUsed != 1 || capacity.DeliveredUsed != 0 ||
 		capacity.PendingLimit != MaxPending || capacity.DeliveredLimit != MaxDelivered ||
-		capacity.NearLimit || capacity.IngressBlocked {
+		capacity.NearLimit != capacity.DiskNearLimit ||
+		capacity.IngressBlocked != capacity.DiskIngressBlocked {
 		t.Fatalf("capacity reported inconsistent or fabricated state: %+v", capacity)
 	}
 }

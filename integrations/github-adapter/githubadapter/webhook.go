@@ -39,6 +39,11 @@ func NewHandler(repo Repository, secret []byte, spool *Spool) (Handler, error) {
 	if spool == nil || len(secret) < 32 || repo.ID <= 0 || repo.FullName == "" {
 		return Handler{}, ErrInvalid
 	}
+	// Refuse listener construction for any restored historical snapshot,
+	// even if its original signed ZIP was fully valid.
+	if err := spool.requireActive(); err != nil {
+		return Handler{}, err
+	}
 	// The secret remains in process memory only. Never log the header or key.
 	return Handler{Repository: repo, Secret: append([]byte(nil), secret...), Spool: spool}, nil
 }

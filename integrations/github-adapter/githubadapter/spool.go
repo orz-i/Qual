@@ -19,7 +19,12 @@ const MaxTransitions = 24
 
 // Spool is an owner-only persistent queue of normalized fact metadata.
 // No webhook JSON, external titles or credentials are written to disk.
-type Spool struct{ Root string }
+type Spool struct {
+	Root string
+	// Test-scoped probe; unset in normal operations to use kernel statfs.
+	// Never accept this from HTTP, Webhook or untrusted Mapping configuration.
+	probeDisk func(string) (filesystemStats, error)
+}
 
 func safeDir(path string) error {
 	fi, err := os.Lstat(path)
@@ -63,8 +68,22 @@ func OpenSpool(root string) (*Spool, error) {
 	if err := safeParent(filepath.Dir(root)); err != nil {
 		return nil, err
 	}
+	// Only a truly non-existent root is allowed to receive new ACTIVE
+	// origin witnesses. Existing directories missing their witnesses MUST
+	// fail closed, including restored snapshots with deleted quarantine
+	// markers. Never silently auto-upgrade an ambiguous legacy spool.
+	_, statErr := os.Lstat(root)
+	fresh := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !fresh {
+		return nil, statErr
+	}
 	if err := safeDir(root); err != nil {
 		return nil, err
+	}
+	if fresh {
+		if err := createFreshOrigin(root); err != nil {
+			return nil, err
+		}
 	}
 	for _, sub := range []string{"pending", "delivered", "archived", "archive-index"} {
 		if err := safeDir(filepath.Join(root, sub)); err != nil {
@@ -72,12 +91,27 @@ func OpenSpool(root string) (*Spool, error) {
 		}
 	}
 	spool := &Spool{Root: root}
-	// A killed worker may have synced the Delivered record but not yet
-	// removed the old Pending file. Reconcile before any new publishing.
-	err := spool.withLock("worker", func() error {
+	// Validate any restore quarantine metadata even for read-only OpenSpool;
+	// a malformed/mispermissioned marker cannot silently become an active
+	// queue. Ordinary never-restored pilot spools continue to open normally.
+	recovery, err := spool.RecoveryStatus()
+	if err != nil {
+		return nil, err
+	}
+	if !recovery.Quarantined {
+		if err := requireFreshOrigin(root); err != nil {
+			return nil, err
+		}
+	}
+	// ACTIVE spools may safely complete crash recovery before new writes.
+	// QUARANTINED restored spools are only for read-only inspection and
+	// external source reconciliation: never silently delete Pending or
+	// move Delivered/Archived facts when opening an old signed snapshot.
+	err = spool.withLock("worker", func() error {
 		return spool.withLock("queue", func() error {
-			// Reconcile old Pending+Delivered overlap BEFORE a partially
-			// indexed Delivered receipt is moved into Archived.
+			if recovery.Quarantined {
+				return spool.validateQuarantinedReadOnly()
+			}
 			if err := spool.reconcileLocked(); err != nil {
 				return err
 			}
@@ -180,6 +214,11 @@ func (s *Spool) withLock(name string, run func() error) error {
 }
 
 func (s *Spool) atomicWrite(path string, d Delivery) error {
+	// Refuse mutations before consuming recovery reserve. File and directory
+	// fsync must also succeed before a webhook may acknowledge 202.
+	if err := s.diskPreflight(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(d)
 	if err != nil {
 		return err
@@ -390,6 +429,9 @@ func (s *Spool) PinTarget(in Delivery, target Target) (Delivery, error) {
 	}
 	var result Delivery
 	err := s.withLock("queue", func() error {
+		if err := s.requireActive(); err != nil {
+			return err
+		}
 		saved, found, err := s.read("pending", in.DeliveryID)
 		if err != nil {
 			return err
@@ -425,6 +467,9 @@ func (s *Spool) Enqueue(d Delivery) (bool, error) {
 	}
 	created := false
 	err := s.withLock("queue", func() error {
+		if err := s.requireActive(); err != nil {
+			return err
+		}
 		if err := s.reconcileLocked(); err != nil {
 			return err
 		}
@@ -502,6 +547,9 @@ func (s *Spool) Pending() ([]Delivery, error) {
 
 func (s *Spool) Update(d Delivery, completed bool) error {
 	return s.withLock("queue", func() error {
+		if err := s.requireActive(); err != nil {
+			return err
+		}
 		if err := s.reconcileLocked(); err != nil {
 			return err
 		}
@@ -562,6 +610,9 @@ func (s *Spool) RequeueAfterReview(id, reasonCode string) error {
 	}
 	return s.withLock("worker", func() error {
 		return s.withLock("queue", func() error {
+			if err := s.requireActive(); err != nil {
+				return err
+			}
 			item, exists, err := s.read("pending", id)
 			if err != nil {
 				return err
@@ -611,13 +662,20 @@ func (s *Spool) RequeueAfterReview(id, reasonCode string) error {
 // credentials. The pilot fails closed rather than deleting old delivered
 // identities, which would permit replay after a retention window.
 type CapacityStatus struct {
-	PendingUsed    int  `json:"pending_used"`
-	PendingLimit   int  `json:"pending_limit"`
-	DeliveredUsed  int  `json:"delivered_used"`
-	DeliveredLimit int  `json:"delivered_limit"`
-	ArchivedUsed   int  `json:"archived_used"`
-	NearLimit      bool `json:"near_limit"`
-	IngressBlocked bool `json:"ingress_blocked"`
+	RestoreQuarantined           bool   `json:"restore_quarantined"`
+	RequiresSourceReconciliation bool   `json:"requires_source_reconciliation"`
+	PendingUsed                  int    `json:"pending_used"`
+	PendingLimit                 int    `json:"pending_limit"`
+	DeliveredUsed                int    `json:"delivered_used"`
+	DeliveredLimit               int    `json:"delivered_limit"`
+	ArchivedUsed                 int    `json:"archived_used"`
+	DiskTotalBytes               uint64 `json:"disk_total_bytes"`
+	DiskAvailableBytes           uint64 `json:"disk_available_bytes"`
+	DiskReserveBytes             uint64 `json:"disk_reserve_bytes"`
+	DiskNearLimit                bool   `json:"disk_near_limit"`
+	DiskIngressBlocked           bool   `json:"disk_ingress_blocked"`
+	NearLimit                    bool   `json:"near_limit"`
+	IngressBlocked               bool   `json:"ingress_blocked"`
 }
 
 func (s *Spool) Capacity() (CapacityStatus, error) {
@@ -632,12 +690,30 @@ func (s *Spool) Capacity() (CapacityStatus, error) {
 		}
 	}
 	delivered := counts["delivered"]
+	disk, err := s.disk()
+	if err != nil {
+		return CapacityStatus{}, err // fail closed, never report fake capacity
+	}
+	diskNear := disk.AvailableBytes <= diskWarnFreeBytes ||
+		disk.AvailableBytes <= disk.TotalBytes/5
+	diskBlocked := disk.AvailableBytes < diskReserveBytes
+	recovery, err := s.RecoveryStatus()
+	if err != nil {
+		return CapacityStatus{}, err
+	}
 	return CapacityStatus{
-		PendingUsed: pending, PendingLimit: MaxPending,
+		RestoreQuarantined:           recovery.Quarantined,
+		RequiresSourceReconciliation: recovery.RequiresSourceReconciliation,
+		PendingUsed:                  pending, PendingLimit: MaxPending,
 		DeliveredUsed: delivered, DeliveredLimit: MaxDelivered,
-		ArchivedUsed:   counts["archived"],
-		NearLimit:      pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4,
-		IngressBlocked: pending >= MaxPending || delivered >= MaxDelivered,
+		ArchivedUsed:       counts["archived"],
+		DiskTotalBytes:     disk.TotalBytes,
+		DiskAvailableBytes: disk.AvailableBytes,
+		DiskReserveBytes:   diskReserveBytes,
+		DiskNearLimit:      diskNear,
+		DiskIngressBlocked: diskBlocked,
+		NearLimit:          pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4 || diskNear,
+		IngressBlocked:     pending >= MaxPending || delivered >= MaxDelivered || diskBlocked || recovery.Quarantined,
 	}, nil
 }
 

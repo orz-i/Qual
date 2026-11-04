@@ -192,11 +192,21 @@ func (p Publisher) deliver(ctx context.Context, base *url.URL, d Delivery, t Tar
 
 func (p Publisher) PublishOnce(ctx context.Context) (PublishStats, error) {
 	var stats PublishStats
+	if p.Spool == nil {
+		return stats, ErrInvalid
+	}
+	if err := p.Spool.requireActive(); err != nil {
+		return stats, err
+	}
 	m, base, err := p.validate()
 	if err != nil {
 		return stats, err
 	}
 	err = p.Spool.withLock("worker", func() error {
+		// Check again inside the worker lock before any network requests.
+		if err := p.Spool.requireActive(); err != nil {
+			return err
+		}
 		jobs, err := p.Spool.Pending()
 		if err != nil {
 			return err

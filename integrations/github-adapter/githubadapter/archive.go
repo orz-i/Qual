@@ -165,6 +165,9 @@ func (s *Spool) ArchiveDelivered(limit int) (ArchiveStats, error) {
 	}
 	err := s.withLock("worker", func() error {
 		return s.withLock("queue", func() error {
+			if err := s.requireActive(); err != nil {
+				return err
+			}
 			if err := s.reconcileLocked(); err != nil {
 				return err
 			}

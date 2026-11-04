@@ -97,3 +97,35 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 - 归档是热目录容量恢复，不是安全删除或长期磁盘容量解决方案：历史身份/内容索引均永久留存，磁盘消耗随真实 GitHub Event 单调增长。需要另行配置可信独立备份、磁盘监测、恢复演练和已授权外部调度；绝不直接清空 Archived 或 archive-index 来回收空间。--approve 依旧是同 macOS UID 下的 Operator 约定，不具独立 Human 审批。
 
 完整故障模型、验证入口及未满足的生产前提见 [已投递安全归档设计和验证](../../docs/security/pr1-safe-delivered-archive-2026-11-04.md)。
+
+
+## QUAL-50 受控本机磁盘与离线签名恢复（叠加变更）
+
+- 新增磁盘可用空间水位/总容量可见性：低于 64 MiB 可用空间时新的 Spool 写入 fail closed 503；物理磁盘使用 >=80% 或可用空间 <=256 MiB 时 inspect 的 disk_near_limit 为真。不可对旧有效重放虚构新条目或丢失既有 Ready Event。
+- 增加显式本机 Operator backup --out <fresh-absolute.zip> --approve 和 restore --file <signed.zip> --into <new-directory> --approve；只使用由可信 Operator **独立安全注入**的 QUAL_GITHUB_BACKUP_HMAC_KEY，不得复用 GitHub Webhook/Qual PI/Human/Operator PostgreSQL HMAC Key。签名为 HMAC-SHA256 完整性，**不加密**备份。恢复只到不存在的新目录，不自动替换正式 Adapter、授权或启动外部 PI。
+- 只备份已脱敏的 Pending/Delivered/Archived/ArchiveIndex；不会复制原始第三方 Webhook Body 或秘密凭据。备份/恢复都会失败关闭而不毁损原有身份与失败历史；官方 Human-only Key 的真实部署、可信外部备份与隔离恢复演练仍 Pending。
+- [QUAL-50 磁盘保护](../../docs/security/qual50-adapter-disk-watermark-2026-11-04.md) 与 [安全签名归档/隔离恢复](../../docs/security/qual50-signed-spool-backup-2026-11-04.md) 分别记录实际测试、性能和安全边界。
+
+
+### 2026-11-04 PR #2 技术对抗复核补丁
+
+- 已核实原 Restore 使用先 Lstat 再普通 Rename，在底层 rename 系统调用前存在较窄目标目录竞争窗口。现在 Darwin 调用 RENAME_EXCL、Linux 调用 RENAME_NOREPLACE，原子拒绝已存在的目录、普通文件或符号链接；不支持的平台必须 fail closed。Do not conflate Go os.Rename's preliminary directory check with an atomic nonreplacement guarantee.
+- 备份签名验证不代表快照新鲜度。恢复成功输出 snapshot_freshness_verified=false 与 requires_source_reconciliation=true。使用早于某次 Webhook 投递的有效签名快照恢复，会丢失晚于备份产生的去重墓碑；恢复前后不能仅凭 HMAC 就安全切换接收器。实际已通过合成 HMAC 对抗测试复现，仍是正式上线阻断项。
+- 详细证据、修复验证与未解决风险参见 [PR #2 对抗复核](../../docs/security/pr2-atomic-restore-audit-2026-11-04.md)。
+
+
+### QUAL-51：已签名旧快照默认恢复隔离（不可当作完整生产恢复）
+
+从本阶段候选代码起，RestoreSignedBackup 在对外发布之前为每个恢复队列持久写入双份 owner-only 0600 恢复标记，强制 Quarantined 状态；一个标记缺失、权限错误或内容不匹配，OpenSpool 会拒绝。受控 inspect 可查看 recovery 和 capacity.ingress_blocked，serve/once、Enqueue/PinTarget/Update、人工重排和归档都会 fail closed。即使新的操作员将已恢复数据再次备份并恢复，它也仍然被隔离。本地无 --approve 绕过开关，不接触 Human-only HMAC。
+
+此外，新建的 Spool 现在必须持久保存双份绑定根目录路径的 `active-source-origin*.json`，只有 OpenSpool 首次创建真正不存在的目录才可生成。未知旧 Spool 不能自动取得新来源身份；恢复签名 ZIP 不携带 ACTIVE 见证。即使意外**同时删除两份 quarantine**，没有 ACTIVE 见证的已恢复快照仍不能被 OpenSpool/serve/once/Enqueue 当作新来源，从而避免一种 fail-open 恢复路径。迁移旧合法目录必须受控保留并核对完整事实，不可通过清空历史重建 Spool。隔离 Go Race 49 条和真实临时 Goose17/12 专项19条已通过。
+
+这仍不是完整的可信来源账本对账；同 OS UID 可伪造/删改本地见证、旧版二进制可忽略它。生产激活前必须完成由不同真实授权主体维护的完整来源事实水位／独立核验和部署隔离。详见 [QUAL-51 恢复隔离设计与剩余阻断项](../../docs/security/qual51-restored-snapshot-quarantine-2026-11-04.md) 及 [新鲜 Spool 双来源标记门禁](../../docs/security/qual51-origin-witness-deny-by-default-2026-11-04.md)。
+
+### QUAL-51：三方签名来源对账只读验证层（未具备可信生产签发服务）
+
+新增独立 Go 库接口 `VerifyRestoredSourceEvidence`，要求三个分别由外部受信任公钥验证的 Ed25519 规范签名声明：连续的 GitHub 来源事件账本、对应的 Qual Event/Project/WorkItem/Thread 证明、以及绑定恢复快照 SHA、前两份账本哈希和最新来源水位的 Operator 围栏。密钥必须由真正独立的安全域固定；**本 Adapter 不生成生产签名、没有内置来源账本生产者，也不根据本地证明发放恢复授权**。
+
+只读检查在恢复队列双锁内进行：发现 T0 旧备份缺失 T1 来源事实、Qual Event 错配、来源序列缺口、重复已签 Body、过期水位或伪造签名时拒绝或标记不一致。即使所有提交的证明一一对应，返回值也始终是 `activation_authorized=false`、`latest_source_externally_proven=false`、`requires_independent_review=true`；恢复队列继续 Quarantined，绝不启动 `serve`/`once`。
+
+源码上限是从第一个来源事实开始连续的 10,000 个事件和总计 4 MiB 的规范证据；它不能单独承担无限历史生产账本或认证不同真实 Human/OS 主体。真实来源签发、Qual 可信导出、外部最新水位和受权激活**均未实现**。本地仅使用随机测试 Ed25519 私钥验证实现与安全负例。协议和发布阻断详见 [QUAL-51 独立签名来源对账的工程协议](../../docs/security/qual51-independent-signed-reconciliation-2026-11-03.md)。
