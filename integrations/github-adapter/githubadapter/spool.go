@@ -103,12 +103,15 @@ func OpenSpool(root string) (*Spool, error) {
 			return nil, err
 		}
 	}
-	// A killed worker may have synced the Delivered record but not yet
-	// removed the old Pending file. Reconcile before any new publishing.
+	// ACTIVE spools may safely complete crash recovery before new writes.
+	// QUARANTINED restored spools are only for read-only inspection and
+	// external source reconciliation: never silently delete Pending or
+	// move Delivered/Archived facts when opening an old signed snapshot.
 	err = spool.withLock("worker", func() error {
 		return spool.withLock("queue", func() error {
-			// Reconcile old Pending+Delivered overlap BEFORE a partially
-			// indexed Delivered receipt is moved into Archived.
+			if recovery.Quarantined {
+				return spool.validateQuarantinedReadOnly()
+			}
 			if err := spool.reconcileLocked(); err != nil {
 				return err
 			}
