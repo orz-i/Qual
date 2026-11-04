@@ -145,6 +145,9 @@ func main() {
 		}
 		if dbSchema.allowsEvents() && hasThreadSchema {
 			deps.Events = &eventapp.Service{Identity: auth, Events: eventpg.Repository{Pool: pool}}
+			if hasAgentRunSchema {
+				deps.Work.Attention = workpostgres.Repository{Pool: pool}
+			}
 		}
 		if dbSchema.Version >= 16 && hasThreadSchema && hasAgentRunSchema {
 			sampleSeconds := 60
@@ -162,6 +165,7 @@ func main() {
 				staleAfter = 3 * sample
 			}
 			deps.Runs = runapp.Service{Identity: auth, Runs: runpg.Repository{Pool: pool}, HeartbeatSampleInterval: sample, StaleAfter: staleAfter}
+			deps.Work.AttentionStaleAfter = staleAfter
 		}
 		logger.Info("Local business and evidence routes enabled", "agent_run_reports", hasAgentRunSchema)
 	} else {
