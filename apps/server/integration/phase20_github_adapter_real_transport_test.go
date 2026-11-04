@@ -305,7 +305,9 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if err := json.Unmarshal(restoreOut, &restoreReceipt); err != nil ||
 		restoreReceipt["isolated_restore_verified"] != true ||
 		restoreReceipt["record_count"] != float64(2) ||
-		restoreReceipt["archive_sha256"] != backupReceipt["archive_sha256"] {
+		restoreReceipt["archive_sha256"] != backupReceipt["archive_sha256"] ||
+		restoreReceipt["snapshot_freshness_verified"] != false ||
+		restoreReceipt["requires_source_reconciliation"] != true {
 		t.Fatalf("restored spool did not retain exact signed bytes: %v %v", restoreReceipt, err)
 	}
 	restoredEnv := append(append([]string{}, environment...), "QUAL_GITHUB_SPOOL_DIR="+restoredDir)

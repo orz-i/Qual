@@ -179,7 +179,11 @@ func RestoreSignedBackup(archive, destination string, key []byte) (*Spool, Signe
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
 		return nil, zero, ErrConflict
 	}
-	if err := os.Rename(stage, destination); err != nil {
+	// The existence preflight above is only advisory: concurrent Operators
+	// can reserve a destination after it. Use an OS-enforced *atomic* no-
+	// replace rename, never os.Rename, which has a TOCTOU window between
+	// its internal Lstat check and the underlying replace-capable syscall.
+	if err := renameVerifiedDirectoryNoReplace(stage, destination); err != nil {
 		return nil, zero, err
 	}
 	if err := syncDirectory(parent); err != nil {

@@ -77,8 +77,12 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("isolated signed restore refused; check Operator key and owner-only archives")
 		}
+		// A valid HMAC proves bytes, NOT when the snapshot was captured.
+		// Never represent isolated restore as approved production cutover.
 		output(map[string]any{"isolated_restore_verified": true,
-			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256})
+			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256,
+			"snapshot_freshness_verified":    false,
+			"requires_source_reconciliation": true})
 		return nil
 	} else if len(os.Args) != 2 || (command != "serve" && command != "once" && command != "inspect") {
 		return fmt.Errorf("unknown command or unexpected argument")
