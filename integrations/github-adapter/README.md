@@ -42,6 +42,10 @@ qual-github-adapter serve
 qual-github-adapter once
 # Only after reviewing and resolving the incident:
 qual-github-adapter requeue '<github-delivery-uuid>' --approve --reason-code auth-restored
+# Explicit, bounded operator-only compaction of successfully Delivered receipts:
+qual-github-adapter inspect
+qual-github-adapter archive 200 --approve
+qual-github-adapter inspect
 ```
 
 已审核的关联文件示例（只是**假 UUID 示例，无法指向真实 WorkItem**）：
@@ -78,3 +82,18 @@ qual-github-adapter requeue '<github-delivery-uuid>' --approve --reason-code aut
 - **人工重试协议与能力边界**：requeue 要求 --approve 与 --reason-code，允许 auth-restored（blocked_auth）、link-repaired（blocked_mapping）或 transient-verified（manual_review）。已有失败状态、HTTP 状态、原因码、时间及执行者 OS UID 按顺序持久留存（最多 24 个状态变更，超限拒绝写入）。这里仍是同一个受信任 OS 账户的操作约定，**不具备独立 Human Principal 的强制鉴权或 OS 不可篡改审计**；Human 与 PI 共享 macOS UID 时不能据此宣称独立安全审批。
 - **容量可见性但尚无安全回收**：inspect 输出 capacity 的 pending/delivered 用量、上限、80% 的 near_limit 及满载 ingress_blocked。容量仍严格限制为 1,000 个 Pending 与 10,000 个 Delivered，满载新入站 503。尚无安全保留墓碑和去重语义的已投递记录归档/回收，不得手动直接删除 Delivered 并继续声称重放安全；本机 Adapter 不能据此宣称长期无人值守生产就绪。
 - **PR 校验可信度**：质量门禁改由受保护目标分支的 pull_request_target 工作流运行，绝不检出/执行 PR Head 代码；它只在此规则已经存在于默认分支之后才真正生效。首次引入该工作流的 PR #1 不受该新门禁的自我保护，仍需独立审查。
+
+
+## 2026-11-04 · 已投递记录的安全热容量归档（非删除）
+
+2026-11-03 的初始整改仅提供了队列用量预警；现在增加显式可信本机 Operator 命令
+qual-github-adapter archive 1..500 --approve。归档后 inspect.capacity.archived_used 显示历史已归档条数，
+delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢复热队列接收能力。
+
+- 只能移动已经真实收到 Qual HTTP 201 且具有已验证 Qual Event UUID 的 Delivered 记录。不会移动 Pending、Blocked、Retry、Conflict，也不会调用 Qual API 或更改任一 WorkItem。
+- 0700 的 archived/ 以原 Delivery ID 保存原始脱敏完成回执；0700 的 archive-index/ 以原始已签名 Body 的 SHA-256 作为索引，保存一致的完整回执副本；两处均为 owner-only 0600。不会存入原始 GitHub Payload、Issue/PR 标题或 Token。
+- 单个记录依次执行“持久化 SHA 索引/目录 fsync → 从 Delivered 原子移动到 Archived → 两个目录 fsync”，崩溃时按同一不可变原回执安全恢复。旧 Pending 和归档索引的重叠崩溃也必须先协调；内容不匹配或索引丢失即拒绝启动，不会通过丢失 Tombstone 让旧签名再次入站。
+- 入站 X-GitHub-Delivery 和原始 Body SHA-256 去重继续覆盖 Pending + 热 Delivered + 已归档 Archived。任意重放不能因归档变成新 Qual Event。新事件仍必须经过有效 GitHub HMAC、仓库数字 ID、Allowlisted Action 与真实 Qual 项目授权。
+- 归档是热目录容量恢复，不是安全删除或长期磁盘容量解决方案：历史身份/内容索引均永久留存，磁盘消耗随真实 GitHub Event 单调增长。需要另行配置可信独立备份、磁盘监测、恢复演练和已授权外部调度；绝不直接清空 Archived 或 archive-index 来回收空间。--approve 依旧是同 macOS UID 下的 Operator 约定，不具独立 Human 审批。
+
+完整故障模型、验证入口及未满足的生产前提见 [已投递安全归档设计和验证](../../docs/security/pr1-safe-delivered-archive-2026-11-04.md)。

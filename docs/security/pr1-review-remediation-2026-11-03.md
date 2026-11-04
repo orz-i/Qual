@@ -17,3 +17,8 @@
 ## 验收纪律
 
 本轮由执行整改的同一 Agent 负责回归，不能冒称另一个 GitHub Principal 的独立安全审批。远端真实 GitHub Webhook/App、TLS Ingress、实际 Integration Credential 的最小授权、正式映射、真实 PI 恢复试点、QUAL-37 独立验收仍在范围之外。PR 继续保持 Draft；修复代码 + 本地/CI 测试不等于正式合并批准。
+
+
+## 2026-11-04 后续专项整改索引
+
+“缺乏安全热目录归档”的阻断已由显式 Operator 安全归档实现解决，详见 [专项设计与回归](pr1-safe-delivered-archive-2026-11-04.md)；原文所述的长期磁盘无限增长、自动运营/独立 Human 审批、真实 GitHub App 和独立验收仍待完成。历史审查原结论和当时缺口不应直接覆写。
