@@ -19,7 +19,12 @@ const MaxTransitions = 24
 
 // Spool is an owner-only persistent queue of normalized fact metadata.
 // No webhook JSON, external titles or credentials are written to disk.
-type Spool struct{ Root string }
+type Spool struct {
+	Root string
+	// Test-scoped probe; unset in normal operations to use kernel statfs.
+	// Never accept this from HTTP, Webhook or untrusted Mapping configuration.
+	probeDisk func(string) (filesystemStats, error)
+}
 
 func safeDir(path string) error {
 	fi, err := os.Lstat(path)
@@ -180,6 +185,11 @@ func (s *Spool) withLock(name string, run func() error) error {
 }
 
 func (s *Spool) atomicWrite(path string, d Delivery) error {
+	// Refuse mutations before consuming recovery reserve. File and directory
+	// fsync must also succeed before a webhook may acknowledge 202.
+	if err := s.diskPreflight(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(d)
 	if err != nil {
 		return err
@@ -611,13 +621,18 @@ func (s *Spool) RequeueAfterReview(id, reasonCode string) error {
 // credentials. The pilot fails closed rather than deleting old delivered
 // identities, which would permit replay after a retention window.
 type CapacityStatus struct {
-	PendingUsed    int  `json:"pending_used"`
-	PendingLimit   int  `json:"pending_limit"`
-	DeliveredUsed  int  `json:"delivered_used"`
-	DeliveredLimit int  `json:"delivered_limit"`
-	ArchivedUsed   int  `json:"archived_used"`
-	NearLimit      bool `json:"near_limit"`
-	IngressBlocked bool `json:"ingress_blocked"`
+	PendingUsed        int    `json:"pending_used"`
+	PendingLimit       int    `json:"pending_limit"`
+	DeliveredUsed      int    `json:"delivered_used"`
+	DeliveredLimit     int    `json:"delivered_limit"`
+	ArchivedUsed       int    `json:"archived_used"`
+	DiskTotalBytes     uint64 `json:"disk_total_bytes"`
+	DiskAvailableBytes uint64 `json:"disk_available_bytes"`
+	DiskReserveBytes   uint64 `json:"disk_reserve_bytes"`
+	DiskNearLimit      bool   `json:"disk_near_limit"`
+	DiskIngressBlocked bool   `json:"disk_ingress_blocked"`
+	NearLimit          bool   `json:"near_limit"`
+	IngressBlocked     bool   `json:"ingress_blocked"`
 }
 
 func (s *Spool) Capacity() (CapacityStatus, error) {
@@ -632,12 +647,24 @@ func (s *Spool) Capacity() (CapacityStatus, error) {
 		}
 	}
 	delivered := counts["delivered"]
+	disk, err := s.disk()
+	if err != nil {
+		return CapacityStatus{}, err // fail closed, never report fake capacity
+	}
+	diskNear := disk.AvailableBytes <= diskWarnFreeBytes ||
+		disk.AvailableBytes <= disk.TotalBytes/5
+	diskBlocked := disk.AvailableBytes < diskReserveBytes
 	return CapacityStatus{
 		PendingUsed: pending, PendingLimit: MaxPending,
 		DeliveredUsed: delivered, DeliveredLimit: MaxDelivered,
-		ArchivedUsed:   counts["archived"],
-		NearLimit:      pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4,
-		IngressBlocked: pending >= MaxPending || delivered >= MaxDelivered,
+		ArchivedUsed:       counts["archived"],
+		DiskTotalBytes:     disk.TotalBytes,
+		DiskAvailableBytes: disk.AvailableBytes,
+		DiskReserveBytes:   diskReserveBytes,
+		DiskNearLimit:      diskNear,
+		DiskIngressBlocked: diskBlocked,
+		NearLimit:          pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4 || diskNear,
+		IngressBlocked:     pending >= MaxPending || delivered >= MaxDelivered || diskBlocked,
 	}, nil
 }
 
