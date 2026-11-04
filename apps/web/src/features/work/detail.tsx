@@ -15,6 +15,7 @@ import { useSession } from '@/features/auth/session'
 import { useMyAccess } from '@/features/access/api'
 import { EvidencePanel } from '@/features/evidence/panel'
 import { WorkExternalTimeline } from '@/features/work/external-timeline'
+import { WorkRunObservability } from '@/features/work/run-observability'
 import { WorkRoleHistory } from '@/features/work/roles'
 import { ReviewGovernancePanel } from '@/features/reviews/governance-panel'
 import { priorityLabel, statusLabel } from '@/features/work/labels'
@@ -297,6 +298,7 @@ export function WorkDetailPage() {
                 </CardContent>
               </Card>
               <WorkExternalTimeline projectID={projectID} itemID={itemID} canRead={access.isSuccess && permissions.includes('work:read')} />
+              <WorkRunObservability projectID={projectID} itemID={itemID} canRead={access.isSuccess && permissions.includes('work:read')} canReadEvidence={access.isSuccess && permissions.includes('artifact:read')} />
               <ReviewGovernancePanel projectID={projectID} item={item} canReview={canReview} canManage={canManage} onLegacyDone={() => transition('done')} />
               <WorkRoleHistory projectID={projectID} itemID={itemID} version={item.version} />
               <EvidencePanel projectID={projectID} targetKind="work_item" targetID={itemID} />
