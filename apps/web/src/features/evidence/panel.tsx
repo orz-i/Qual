@@ -174,7 +174,7 @@ export function EvidencePanel({projectID,targetKind,targetID}:{
           {references.isPending&&<p role="status" className="text-xs text-muted-foreground">正在读取来源链接…</p>}
           <Problem message={references.error?.message}/>
           {references.data?.map(ref=>(
-            <div key={ref.id} className="rounded-lg border p-3 text-sm">
+            <div key={ref.id} id={'external-ref-' + ref.id} className="scroll-mt-24 rounded-lg border p-3 text-sm">
               <p className="font-medium">{ref.provider} · {ref.kind} · {ref.external_id}</p>
               <a className="mt-1 block break-all text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
                 href={ref.url} rel="noopener noreferrer" target="_blank">

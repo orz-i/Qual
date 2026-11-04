@@ -14,6 +14,7 @@ import { useWorkTestCoverage } from '@/features/tests/api'
 import { useSession } from '@/features/auth/session'
 import { useMyAccess } from '@/features/access/api'
 import { EvidencePanel } from '@/features/evidence/panel'
+import { WorkExternalTimeline } from '@/features/work/external-timeline'
 import { WorkRoleHistory } from '@/features/work/roles'
 import { ReviewGovernancePanel } from '@/features/reviews/governance-panel'
 import { priorityLabel, statusLabel } from '@/features/work/labels'
@@ -295,6 +296,7 @@ export function WorkDetailPage() {
                   {coverage.data?.length===0&&<p className="text-sm text-muted-foreground">尚未建立测试覆盖关系；没有记录不代表测试通过。</p>}
                 </CardContent>
               </Card>
+              <WorkExternalTimeline projectID={projectID} itemID={itemID} canRead={access.isSuccess && permissions.includes('work:read')} />
               <ReviewGovernancePanel projectID={projectID} item={item} canReview={canReview} canManage={canManage} onLegacyDone={() => transition('done')} />
               <WorkRoleHistory projectID={projectID} itemID={itemID} version={item.version} />
               <EvidencePanel projectID={projectID} targetKind="work_item" targetID={itemID} />
