@@ -52,7 +52,7 @@ func output(data any) {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue <delivery-id> --approve --reason-code <auth-restored|link-repaired|transient-verified> | archive <1..500> --approve")
+		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue|archive|backup --out <private.zip> --approve|restore --file <private.zip> --into <new-dir> --approve")
 	}
 	command := os.Args[1]
 	if command == "requeue" {
@@ -63,6 +63,23 @@ func run() error {
 		if len(os.Args) != 4 || os.Args[3] != "--approve" {
 			return fmt.Errorf("archiving requires a bounded count and explicit --approve")
 		}
+	} else if command == "backup" {
+		if len(os.Args) != 5 || os.Args[2] != "--out" || os.Args[4] != "--approve" {
+			return fmt.Errorf("signed backup requires --out <new-private-zip> --approve")
+		}
+	} else if command == "restore" {
+		if len(os.Args) != 7 || os.Args[2] != "--file" ||
+			os.Args[4] != "--into" || os.Args[6] != "--approve" {
+			return fmt.Errorf("isolated restore requires --file <signed-zip> --into <new-dir> --approve")
+		}
+		_, stats, err := githubadapter.RestoreSignedBackup(os.Args[3], os.Args[5],
+			[]byte(os.Getenv("QUAL_GITHUB_BACKUP_HMAC_KEY")))
+		if err != nil {
+			return fmt.Errorf("isolated signed restore refused; check Operator key and owner-only archives")
+		}
+		output(map[string]any{"isolated_restore_verified": true,
+			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256})
+		return nil
 	} else if len(os.Args) != 2 || (command != "serve" && command != "once" && command != "inspect") {
 		return fmt.Errorf("unknown command or unexpected argument")
 	}
@@ -71,6 +88,13 @@ func run() error {
 		return fmt.Errorf("adapter repository/spool preflight failed")
 	}
 	switch command {
+	case "backup":
+		stats, err := spool.CreateSignedBackup(os.Args[3], []byte(os.Getenv("QUAL_GITHUB_BACKUP_HMAC_KEY")))
+		if err != nil {
+			return fmt.Errorf("signed snapshot refused; inspect owner-only source and destination")
+		}
+		output(map[string]any{"signed_backup_ready": true,
+			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256})
 	case "archive":
 		limit, err := strconv.Atoi(os.Args[2])
 		if err != nil || limit < 1 || limit > 500 {

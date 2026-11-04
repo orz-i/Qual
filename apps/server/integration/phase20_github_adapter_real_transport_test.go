@@ -277,6 +277,119 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if stats := doOnce(); stats["attempted"] != float64(0) {
 		t.Fatalf("archived/replayed event invoked Qual again: %v", stats)
 	}
+	// QUAL-50: use a SEPARATE Operator-only synthetic HMAC key to snapshot
+	// the complete durable Adapter spool. No real Human or Qual backup key
+	// is read; the signed bundle is restored only to a new isolated path.
+	backupZip := filepath.Join(t.TempDir(), "qual50-adapter-signed.zip")
+	restoredDir := filepath.Join(t.TempDir(), "qual50-restored")
+	backupKey := "synthetic-qual50-independent-signature-key-2026-11-04"
+	operatorEnv := append(append([]string{}, environment...), "QUAL_GITHUB_BACKUP_HMAC_KEY="+backupKey)
+	externalBackup := exec.Command(binary, "backup", "--out", backupZip, "--approve")
+	externalBackup.Env = operatorEnv
+	backupOut, err := externalBackup.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real external Operator-only signed backup refused: %v output_bytes=%d", err, len(backupOut))
+	}
+	var backupReceipt map[string]any
+	if err := json.Unmarshal(backupOut, &backupReceipt); err != nil ||
+		backupReceipt["signed_backup_ready"] != true || backupReceipt["record_count"] != float64(2) {
+		t.Fatalf("real signed snapshot omitted archive SHA index or receipt: %v %v", backupReceipt, err)
+	}
+	externalRestore := exec.Command(binary, "restore", "--file", backupZip, "--into", restoredDir, "--approve")
+	externalRestore.Env = operatorEnv
+	restoreOut, err := externalRestore.CombinedOutput()
+	if err != nil {
+		t.Fatalf("external isolated signed restore refused: %v output_bytes=%d", err, len(restoreOut))
+	}
+	var restoreReceipt map[string]any
+	if err := json.Unmarshal(restoreOut, &restoreReceipt); err != nil ||
+		restoreReceipt["isolated_restore_verified"] != true ||
+		restoreReceipt["record_count"] != float64(2) ||
+		restoreReceipt["archive_sha256"] != backupReceipt["archive_sha256"] {
+		t.Fatalf("restored spool did not retain exact signed bytes: %v %v", restoreReceipt, err)
+	}
+	restoredEnv := append(append([]string{}, environment...), "QUAL_GITHUB_SPOOL_DIR="+restoredDir)
+	inspector := exec.Command(binary, "inspect")
+	inspector.Env = restoredEnv
+	inspectOut, err := inspector.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restored spool rejected by separate inspect process: %v output_bytes=%d", err, len(inspectOut))
+	}
+	var inspect map[string]any
+	if err := json.Unmarshal(inspectOut, &inspect); err != nil {
+		t.Fatal(err)
+	}
+	states, ok := inspect["states"].(map[string]any)
+	if !ok || states["archived"] != float64(1) || states["delivered"] != float64(0) {
+		t.Fatalf("restored archive/index facts missing: %v", inspect)
+	}
+	// A second *real* external Adapter listener uses the restored spool,
+	// not the live original: the exact same signed body with a new unsigned
+	// Delivery UUID must still return new=false without touching Qual.
+	secondListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAddr := secondListener.Addr().String()
+	_ = secondListener.Close()
+	secondAdapter := exec.Command(binary, "serve")
+	secondAdapter.Env = append(restoredEnv, "QUAL_GITHUB_LISTEN_ADDR="+secondAddr)
+	secondAdapter.Stdout, secondAdapter.Stderr = io.Discard, io.Discard
+	if err := secondAdapter.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if secondAdapter.Process != nil {
+			_ = secondAdapter.Process.Kill()
+			_, _ = secondAdapter.Process.Wait()
+		}
+	})
+	secondReady := false
+	for range 65 {
+		probe, err := (&http.Client{Timeout: time.Second}).Get("http://" + secondAddr + "/healthz")
+		if err == nil {
+			probe.Body.Close()
+			if probe.StatusCode == 200 {
+				secondReady = true
+				break
+			}
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	if !secondReady {
+		t.Fatal("second real external Adapter could not open restored owner-only spool")
+	}
+	secondMAC := hmac.New(sha256.New, []byte(secret))
+	_, _ = secondMAC.Write(payload)
+	replayedRequest, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+secondAddr+"/github/webhook", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedRequest.Header.Set("Content-Type", "application/json")
+	replayedRequest.Header.Set("X-GitHub-Delivery", uuid.NewString())
+	replayedRequest.Header.Set("X-GitHub-Event", "pull_request")
+	replayedRequest.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(secondMAC.Sum(nil)))
+	replayResponse, err := (&http.Client{Timeout: 5 * time.Second}).Do(replayedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replayResponse.Body.Close()
+	var replayBody map[string]any
+	if replayResponse.StatusCode != 202 || json.NewDecoder(replayResponse.Body).Decode(&replayBody) != nil ||
+		replayBody["new"] != false {
+		t.Fatalf("restored process recreated old signed payload: HTTP%d %v", replayResponse.StatusCode, replayBody)
+	}
+	restoredOnce := exec.Command(binary, "once")
+	restoredOnce.Env = restoredEnv
+	replayedOut, err := restoredOnce.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restored Adapter worker failed closed unexpectedly: %v bytes=%d", err, len(replayedOut))
+	}
+	var restoreStats map[string]any
+	if json.Unmarshal(replayedOut, &restoreStats) != nil || restoreStats["attempted"] != float64(0) {
+		t.Fatalf("restored signed event generated new Qual POST: %v", restoreStats)
+	}
 	var eventAudits int
 	if err := f.pool.QueryRow(ctx, "SELECT count(*) FROM qual.audit_records WHERE project_id=$1 AND operation='external_event.recorded'", f.project).Scan(&eventAudits); err != nil || eventAudits != 1 {
 		t.Fatalf("Event redelivery fabricated extra audit: %d %v", eventAudits, err)
