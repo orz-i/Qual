@@ -166,6 +166,15 @@ func TestQual37CrossContextResumeAndEvidence(t *testing.T) {
 		artifactID, f.project).Scan(&objectKey); err != nil {
 		t.Fatal(err)
 	}
+	// Delete only this test-created object, while the disposable S3 client
+	// is still open. Do not turn a failed test into an orphaned fixture.
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := f.objects.Delete(cleanupCtx, objectKey); err != nil {
+			t.Errorf("own disposable S3 object cleanup failed: %v", err)
+		}
+	})
 	if err := f.objects.Put(ctx, objectKey, "text/plain", []byte("tampered")); err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +183,10 @@ func TestQual37CrossContextResumeAndEvidence(t *testing.T) {
 	}
 	if err := f.objects.Put(ctx, objectKey, "text/plain", payload); err != nil {
 		t.Fatal(err)
+	}
+	if code, restored := rawHTTP(t, "GET", artifactURL, f.viewer, "", nil, ""); code != 200 ||
+		!bytes.Equal(restored, payload) {
+		t.Fatalf("restored S3 bytes failed integrity readback: HTTP%d", code)
 	}
 
 	// Each invocation launches a new Qual CLI process; no chat context is

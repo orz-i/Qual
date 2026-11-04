@@ -13,13 +13,13 @@
 - 有版本的 WorkItem `todo→in_progress`、CAS Thread Link；未获 event:write/run:report 的普通 work:write Agent 实际收到 403，必须明确测试 Credential Scope 和 Project Allow 后才能追加。
 - Event 首次记录及不同请求键重试均保留同一个来源事实；同 External ID 不同 payload SHA 返回 409，来源文本不会自动写入 Review 或 WorkItem。
 - 合成 AgentRun blocked 优先覆盖相同 WorkItem 的 event_needs_input 线索，Attention 仍仅返回一个 hint_only 项，原 Audit 无权 403，跨 Project 404。
-- 真实 TestCaseVersion、TestRun、先 Failed 后 Passed 的不可变 Attempt，真实 S3 Ready Artifact 和 SHA 验证；篡改对象后下载返回 HTTP422，原有数据可恢复。
+- 真实 TestCaseVersion、TestRun、先 Failed 后 Passed 的不可变 Attempt，真实 S3 Ready Artifact 和 SHA 验证；篡改对象后下载返回 HTTP422，恢复原始字节后再次 HTTP200 验证；仅删除当前测试创建的 S3 对象（单独的 Cleanup 回执）。
 - 构建并启动真正独立 Qual CLI 进程两次读取 resume：第一次 WorkItem v4 和两个历史 Attempt；合法评论增加版本至 v5 后第二个新进程回读 v5 且历史仍在；旧版本写入 CAS409。
 - 真实同一 Human Principal 对自己创建的合成工作项写 self_review=true（并非独立批准）；测试结束前撤销 Agent Credential，新的 CLI resume 与 Run 写操作被拒绝。全部外部报告未修改原 WorkItem in_progress 状态。
 
 ## 真实执行回执
 
-- 专项独立 PostgreSQL `qual32_run_ci_1793774604_1` 真 Goose17 集成测试：`go test -race -tags=integration -count=1 -v -run '^TestQual37CrossContextResumeAndEvidence$' ./integration` → **PASS**，测试数据库按保护流程删除。
+- 专项独立 PostgreSQL `qual32_run_ci_1793774604_1` 真 Goose17 集成测试：`go test -race -tags=integration -count=1 -v -run '^TestQual37CrossContextResumeAndEvidence$' ./integration` → **PASS**，数据库删除。测试对象清理增强后在另一个真实新建的 `qual32_run_ci_1793775281_1` Goose17 数据库重新执行 **PASS**，临时数据库也已删除；代码中 Cleanup 限定为该用例自己创建的 S3 object_key，非任何正式对象。
 - 受保护总脚本 `scripts/tests/ci_goose17_guarded.sh` 在单独隔离的四组 Goose17/12 PG，携带真正本机开发 S3：**19 个顶层 PASS、1 个预期历史 SKIP、4 组临时数据库残留 0**。
 - 同一组合分支的 Go `go test ./...` 和 `go vet ./...`，OpenAPI contract/TS SDK、前端 TypeScript/Lint/Build 均实际通过，**33/33 Node 单元回归 Passed**。
 
