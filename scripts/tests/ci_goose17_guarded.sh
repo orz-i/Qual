@@ -66,10 +66,10 @@ run_scoped() (
 )
 
 run_scoped context qual27_ctx_integrated 17 '^TestQual27Context' 3 0
-run_scoped runs-and-archive qual32_run 17 '^(TestAgentRun|TestQual4344AuditMultiRunArchiveCompleteness)' 4 0
+run_scoped runs-and-archive qual32_run 17 '^(TestAgentRun|TestQual4344AuditMultiRunArchiveCompleteness|TestQual34Attention)' 5 0
 run_scoped done-gate qual21_gate 17 '^TestPhase11' 9 1
 # The historical Goose12 case MUST execute against an actual Goose12 DB.
 run_scoped historical-goose12 qual21_history12 12 \
   '^TestPhase11ReadAcceptanceHistoryFromPreMigrationGoose12$' 1 0
 
-echo 'All 17 guarded Context/AgentRun/Archive/DoneGate/Goose12 tests passed'
+echo 'All 18 guarded Context/AgentRun/Archive/DoneGate/Attention/Goose12 tests passed'

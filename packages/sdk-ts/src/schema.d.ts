@@ -743,6 +743,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{projectID}/attention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Bounded read-only attention items derived from existing Review, AgentRun and Event facts
+         * @description Requires effective work:read. Project-scoped, no raw Audit or private Artifact
+         *     and no automatic approvals, WorkItem status changes or agent execution.
+         *     At most one highest-urgency item per WorkItem; review needs_work and
+         *     explicit re-submission retain the exact existing ReviewQueue semantics.
+         *     AgentRun blocked/stale/unknown and allowlisted external needs_input /
+         *     attention.required Events are only untrusted attention hints. Stale
+         *     is calculated from server last_seen, never from claimed source time.
+         *     Event hints appear for up to seven days while the WorkItem has not
+         *     been updated after receipt; they never assert a Human decision.
+         *     Offset pagination is non-snapshot and capped at 500 ordered items.
+         *     For full history use WorkItem/Thread/AgentRun scoped endpoints.
+         *     This route is registered only with Goose17's requisite tables.
+         */
+        get: operations["listProjectAttention"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{projectID}/external-events": {
         parameters: {
             query?: never;
@@ -1585,6 +1616,46 @@ export interface components {
             items: components["schemas"]["ReviewQueueEntry"][];
             has_more: boolean;
             next_offset?: number;
+        };
+        AttentionItem: {
+            /** Format: uuid */
+            work_item_id: string;
+            key: string;
+            title: string;
+            status: components["schemas"]["Status"];
+            priority: components["schemas"]["Priority"];
+            /** Format: uuid */
+            assignee_id: string | null;
+            /** @enum {string} */
+            reason: "review_needs_work" | "review_awaiting" | "review_ready" | "run_blocked" | "run_stale" | "run_unknown" | "event_needs_input";
+            /** @enum {string} */
+            source_kind: "review" | "agent_run" | "external_event";
+            /**
+             * Format: uuid
+             * @description Real immutable source ID, or WorkItem ID when no Reviewer record yet
+             */
+            source_id: string;
+            /** @description Source outcome/provider label, not an authenticated actor */
+            source_label: string;
+            /**
+             * Format: date-time
+             * @description Server-persisted observation timestamp used for ordering
+             */
+            observed_at: string;
+            /**
+             * Format: date-time
+             * @description Optional untrusted source-reported timestamp; never used for ordering
+             */
+            source_at?: string;
+            /** @description True for external Run/Event clues; cannot authorize a business decision */
+            hint_only: boolean;
+        };
+        AttentionPage: {
+            items: components["schemas"]["AttentionItem"][];
+            has_more: boolean;
+            next_offset?: number;
+            /** @description True when a further page exceeds the bounded 500-item projection */
+            paging_limited: boolean;
         };
         WorkContextSummary: {
             /** Format: uuid */
@@ -4034,6 +4105,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewQueuePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listProjectAttention: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ranked project-scoped attention facts with bounded pagination */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttentionPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

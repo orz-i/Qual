@@ -58,6 +58,9 @@ func NewHandler(deps ...*Dependencies) http.Handler {
 		if deps[0].Work.Roles != nil {
 			mux.HandleFunc("GET /api/v1/projects/{projectID}/review-queue", api.reviewQueue)
 		}
+		if deps[0].Work.Attention != nil {
+			mux.HandleFunc("GET /api/v1/projects/{projectID}/attention", api.attentionInbox)
+		}
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/work-items/{itemID}", api.get)
 		if deps[0].Context != nil {
 			mux.HandleFunc("GET /api/v1/projects/{projectID}/work-items/{itemID}/context", contextAPI{work: api, read: deps[0].Context}.get)

@@ -126,6 +126,7 @@ func setup(t *testing.T) *fixture {
 	}
 	if eventSchema {
 		eventService = &eventapp.Service{Identity: auth, Events: eventpg.Repository{Pool: pool}}
+		workSvc.Attention = workpostgres.Repository{Pool: pool}
 	}
 	f.server = httptest.NewServer(httpapi.NewHandler(&httpapi.Dependencies{
 		Identity: auth, Browser: auth, WebOrigin: "http://127.0.0.1:4173",
