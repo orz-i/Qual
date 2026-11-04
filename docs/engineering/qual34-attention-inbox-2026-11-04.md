@@ -6,7 +6,7 @@
 
 - 新增只读 `GET /api/v1/projects/{projectID}/attention?limit=30&offset=0`，沿用 WorkItem 的真正 `work:read` 权限（跨 Project 404；无授权 403；未登录 401），不给出原始 Audit、私有 Artifact、执行或审批动作。
 - 复用已有 PostgreSQL `work_items`、Reviewer `work_role_entries`、AgentRun 和已登记 ExternalEvent；不增加 SQL 表或状态机。当前 Reviewer 的 `needs_work/failed`、`in_review`、真正重新提交、独立 `passed` 按既有 ReviewQueue 意义排序；`self_review=true` 不等于独立通过。
-- 外部 Run `blocked`、`running` 的 stale/unknown 为 **hint_only** 线索；stale 根据 Qual **服务端收到的** last_seen 与已有 AgentRun 门限判断，不把源时间当作权威。Event 提示仅认可 `needs_input` 或 `attention.required` 字面类型，在最近 7 天且 WorkItem 自收到后未修改时出现，既不代表真实性证明也不自动改变工作项。
+- 外部 Run `blocked`、`running` 的 stale/unknown 为 **hint_only** 线索；stale 根据 Qual **服务端收到的** last_seen 与已有 AgentRun 门限判断，不把源时间当作权威。Event 提示仅认可 `needs_input` 或 `attention.required` 字面类型，在最近 7 天内保留提示，即使 WorkItem 被评论或编辑也不会被隐式确认；仅通过自然时效和限定工作状态排除，既不代表真实性证明也不自动改变工作项。
 - 每个工作项仅显示一条最高优先级线索，保留 real `source_id` 和 `observed_at`；外部发生时间独立标识 `source_at`。总响应上限 50、offset 0..450，按优先级/服务端时间/UUID 稳定排序，明确 offset 在并发写入下**不是原子快照**，封顶报告 `paging_limited`。
 - 不增加 Worker、Agent 调度或“自动核验”；已存在的 ReviewQueue 和 WorkItem 审核继续是唯一权威业务动作。
 

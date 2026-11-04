@@ -78,7 +78,9 @@ const attentionSQL = `WITH review_base AS (
  FROM qual.external_events e JOIN qual.work_items w
    ON w.project_id=e.project_id AND w.id=e.work_item_id
  WHERE e.project_id=$1 AND e.event_type IN ('needs_input','attention.required')
-   AND e.received_at>=$6 AND e.received_at>w.updated_at
+   AND e.received_at>=$6
+   -- A WorkItem comment/edit advances updated_at but does not acknowledge
+   -- or resolve an external request. Keep the hint until its 7-day expiry.
    AND w.status IN ('todo','in_progress','in_review')
  ORDER BY w.id,e.received_at DESC,e.id DESC
 ), event_ranked AS (
