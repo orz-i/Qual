@@ -52,8 +52,8 @@ func TestSignedBackupIsolatedRestoreRetainsIdentityReplayAndFailedHistory(t *tes
 		if err != nil || !found || entry.DeliveredEventID != d.DeliveredEventID {
 			t.Fatalf("restored audit receipt changed: %+v %v", entry, err)
 		}
-		if created, err := restored.Enqueue(d); created || err != nil {
-			t.Fatalf("restored same ID replayed: %t %v", created, err)
+		if created, err := restored.Enqueue(d); created || !errors.Is(err, ErrRestoredQuarantine) {
+			t.Fatalf("restored spool accepted even same ID before independent reconciliation: %t %v", created, err)
 		}
 		replay := d
 		replay.DeliveryID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
@@ -61,13 +61,13 @@ func TestSignedBackupIsolatedRestoreRetainsIdentityReplayAndFailedHistory(t *tes
 		replay.Attempts = 0
 		replay.History = nil
 		replay.DeliveredEventID = ""
-		if fresh, err := restored.Enqueue(replay); fresh || err != nil {
-			t.Fatalf("restored HMAC body digest no longer deduplicated: %t %v", fresh, err)
+		if fresh, err := restored.Enqueue(replay); fresh || !errors.Is(err, ErrRestoredQuarantine) {
+			t.Fatalf("restored HMAC body incorrectly acknowledged before reconciliation: %t %v", fresh, err)
 		}
 		tamper := d
 		tamper.PayloadSHA256 = strings.Repeat("f", 64)
-		if _, err := restored.Enqueue(tamper); !errors.Is(err, ErrConflict) {
-			t.Fatalf("same Delivery ID different Body was not rejected: %v", err)
+		if _, err := restored.Enqueue(tamper); !errors.Is(err, ErrRestoredQuarantine) {
+			t.Fatalf("restored spoofed body bypassed quarantine: %v", err)
 		}
 	}
 	// The producer's historical spool remains intact, not replaced by restore.

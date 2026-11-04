@@ -82,7 +82,10 @@ func run() error {
 		output(map[string]any{"isolated_restore_verified": true,
 			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256,
 			"snapshot_freshness_verified":    false,
-			"requires_source_reconciliation": true})
+			"requires_source_reconciliation": true,
+			"recovery_quarantined":           true,
+			"ingress_allowed":                false,
+			"qual_publishing_allowed":        false})
 		return nil
 	} else if len(os.Args) != 2 || (command != "serve" && command != "once" && command != "inspect") {
 		return fmt.Errorf("unknown command or unexpected argument")
@@ -124,8 +127,13 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("spool capacity unreadable")
 		}
+		recovery, err := spool.RecoveryStatus()
+		if err != nil {
+			return fmt.Errorf("recovery quarantine unreadable")
+		}
 		output(map[string]any{"repository_id": repo.ID, "repository": repo.FullName,
-			"states": counts, "capacity": capacity})
+			"states": counts, "capacity": capacity, "recovery": recovery,
+			"ingress_allowed": !recovery.Quarantined, "qual_publishing_allowed": !recovery.Quarantined})
 	case "once":
 		publisher := githubadapter.Publisher{
 			Spool: spool, Repository: repo, MapPath: os.Getenv("QUAL_GITHUB_MAPPING_FILE"),
@@ -136,14 +144,14 @@ func run() error {
 		defer cancel()
 		stats, err := publisher.PublishOnce(ctx)
 		if err != nil {
-			return fmt.Errorf("Qual delivery failed closed; inspect mapping/credentials")
+			return fmt.Errorf("Qual delivery failed closed; inspect credentials, mapping and recovery quarantine")
 		}
 		output(stats)
 	case "serve":
 		secret := []byte(os.Getenv("QUAL_GITHUB_WEBHOOK_SECRET"))
 		handler, err := githubadapter.NewHandler(repo, secret, spool)
 		if err != nil {
-			return fmt.Errorf("GitHub HMAC secret missing or too short")
+			return fmt.Errorf("GitHub listener unavailable: HMAC configuration or unreconciled recovered spool")
 		}
 		hostport := getenv("QUAL_GITHUB_LISTEN_ADDR", "127.0.0.1:18717")
 		host, port, err := net.SplitHostPort(hostport)

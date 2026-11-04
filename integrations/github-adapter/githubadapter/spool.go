@@ -77,6 +77,12 @@ func OpenSpool(root string) (*Spool, error) {
 		}
 	}
 	spool := &Spool{Root: root}
+	// Validate any restore quarantine metadata even for read-only OpenSpool;
+	// a malformed/mispermissioned marker cannot silently become an active
+	// queue. Ordinary never-restored pilot spools continue to open normally.
+	if _, err := spool.RecoveryStatus(); err != nil {
+		return nil, err
+	}
 	// A killed worker may have synced the Delivered record but not yet
 	// removed the old Pending file. Reconcile before any new publishing.
 	err := spool.withLock("worker", func() error {
@@ -400,6 +406,9 @@ func (s *Spool) PinTarget(in Delivery, target Target) (Delivery, error) {
 	}
 	var result Delivery
 	err := s.withLock("queue", func() error {
+		if err := s.requireActive(); err != nil {
+			return err
+		}
 		saved, found, err := s.read("pending", in.DeliveryID)
 		if err != nil {
 			return err
@@ -435,6 +444,9 @@ func (s *Spool) Enqueue(d Delivery) (bool, error) {
 	}
 	created := false
 	err := s.withLock("queue", func() error {
+		if err := s.requireActive(); err != nil {
+			return err
+		}
 		if err := s.reconcileLocked(); err != nil {
 			return err
 		}
@@ -512,6 +524,9 @@ func (s *Spool) Pending() ([]Delivery, error) {
 
 func (s *Spool) Update(d Delivery, completed bool) error {
 	return s.withLock("queue", func() error {
+		if err := s.requireActive(); err != nil {
+			return err
+		}
 		if err := s.reconcileLocked(); err != nil {
 			return err
 		}
@@ -572,6 +587,9 @@ func (s *Spool) RequeueAfterReview(id, reasonCode string) error {
 	}
 	return s.withLock("worker", func() error {
 		return s.withLock("queue", func() error {
+			if err := s.requireActive(); err != nil {
+				return err
+			}
 			item, exists, err := s.read("pending", id)
 			if err != nil {
 				return err
@@ -621,18 +639,20 @@ func (s *Spool) RequeueAfterReview(id, reasonCode string) error {
 // credentials. The pilot fails closed rather than deleting old delivered
 // identities, which would permit replay after a retention window.
 type CapacityStatus struct {
-	PendingUsed        int    `json:"pending_used"`
-	PendingLimit       int    `json:"pending_limit"`
-	DeliveredUsed      int    `json:"delivered_used"`
-	DeliveredLimit     int    `json:"delivered_limit"`
-	ArchivedUsed       int    `json:"archived_used"`
-	DiskTotalBytes     uint64 `json:"disk_total_bytes"`
-	DiskAvailableBytes uint64 `json:"disk_available_bytes"`
-	DiskReserveBytes   uint64 `json:"disk_reserve_bytes"`
-	DiskNearLimit      bool   `json:"disk_near_limit"`
-	DiskIngressBlocked bool   `json:"disk_ingress_blocked"`
-	NearLimit          bool   `json:"near_limit"`
-	IngressBlocked     bool   `json:"ingress_blocked"`
+	RestoreQuarantined           bool   `json:"restore_quarantined"`
+	RequiresSourceReconciliation bool   `json:"requires_source_reconciliation"`
+	PendingUsed                  int    `json:"pending_used"`
+	PendingLimit                 int    `json:"pending_limit"`
+	DeliveredUsed                int    `json:"delivered_used"`
+	DeliveredLimit               int    `json:"delivered_limit"`
+	ArchivedUsed                 int    `json:"archived_used"`
+	DiskTotalBytes               uint64 `json:"disk_total_bytes"`
+	DiskAvailableBytes           uint64 `json:"disk_available_bytes"`
+	DiskReserveBytes             uint64 `json:"disk_reserve_bytes"`
+	DiskNearLimit                bool   `json:"disk_near_limit"`
+	DiskIngressBlocked           bool   `json:"disk_ingress_blocked"`
+	NearLimit                    bool   `json:"near_limit"`
+	IngressBlocked               bool   `json:"ingress_blocked"`
 }
 
 func (s *Spool) Capacity() (CapacityStatus, error) {
@@ -654,8 +674,14 @@ func (s *Spool) Capacity() (CapacityStatus, error) {
 	diskNear := disk.AvailableBytes <= diskWarnFreeBytes ||
 		disk.AvailableBytes <= disk.TotalBytes/5
 	diskBlocked := disk.AvailableBytes < diskReserveBytes
+	recovery, err := s.RecoveryStatus()
+	if err != nil {
+		return CapacityStatus{}, err
+	}
 	return CapacityStatus{
-		PendingUsed: pending, PendingLimit: MaxPending,
+		RestoreQuarantined:           recovery.Quarantined,
+		RequiresSourceReconciliation: recovery.RequiresSourceReconciliation,
+		PendingUsed:                  pending, PendingLimit: MaxPending,
 		DeliveredUsed: delivered, DeliveredLimit: MaxDelivered,
 		ArchivedUsed:       counts["archived"],
 		DiskTotalBytes:     disk.TotalBytes,
@@ -664,7 +690,7 @@ func (s *Spool) Capacity() (CapacityStatus, error) {
 		DiskNearLimit:      diskNear,
 		DiskIngressBlocked: diskBlocked,
 		NearLimit:          pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4 || diskNear,
-		IngressBlocked:     pending >= MaxPending || delivered >= MaxDelivered || diskBlocked,
+		IngressBlocked:     pending >= MaxPending || delivered >= MaxDelivered || diskBlocked || recovery.Quarantined,
 	}, nil
 }
 

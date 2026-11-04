@@ -141,6 +141,13 @@ func RestoreSignedBackup(archive, destination string, key []byte) (*Spool, Signe
 	if err := os.Chmod(stage, 0700); err != nil {
 		return nil, zero, err
 	}
+	// Install and fsync the recovery quarantine as EARLY AS POSSIBLE.
+	// Even an unpublished in-progress stage must never look like a trusted
+	// active queue if another local process notices its owner-only path.
+	// Authentication and ZIP structure validation already succeeded.
+	if err := (&Spool{Root: stage}).installRecoveryQuarantine(sum); err != nil {
+		return nil, zero, err
+	}
 	for _, sub := range snapshotDirectories {
 		if err := safeDir(filepath.Join(stage, sub)); err != nil {
 			return nil, zero, err
@@ -173,6 +180,9 @@ func RestoreSignedBackup(archive, destination string, key []byte) (*Spool, Signe
 	}
 	// The normal spool startup audits all archive indexes, immutable receipts
 	// and Pending/Delivered crash windows before any isolated rename.
+	// Opening the staged queue validates its durable quarantine marker,
+	// immutable receipts, archived SHA indexes and crash recovery windows.
+	// This implementation intentionally has NO local "approve" unlock.
 	if _, err := OpenSpool(stage); err != nil {
 		return nil, zero, err
 	}
