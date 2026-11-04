@@ -10,6 +10,7 @@ import { statusLabel, priorityLabel } from '@/features/work/labels'
 import { useProjectPrincipals, principalLabel } from '@/features/work/principals'
 import { useReviewQueue, useProjectAudit, type ReviewQueueEntry, type ReviewQueueLane } from './api'
 import { filterReviewQueue, reviewSummary, reviewLane, reviewStatusMismatch } from './rules'
+import { AttentionInboxPanel } from './attention-panel'
 
 const outcomeNames: Record<string,string> = {
   observed:'观察记录',passed:'核验通过',failed:'核验失败',needs_work:'需要整改',
@@ -186,7 +187,8 @@ export function ReviewCenterPage(){
  const canReview=canRead&&perms.includes('work:review')
  const canAudit=perms.includes('audit:read')
  const canManage=perms.includes('access:manage')
- const queue=useReviewQueue(projectID,canRead)
+ const [showReviewDetails,setShowReviewDetails]=useState(false)
+ const queue=useReviewQueue(projectID,canRead&&showReviewDetails)
  const items=queue.data?.pages.flatMap(p=>p.items)??[]
  const principals=useProjectPrincipals(projectID,canRead
   ?items.flatMap(item=>[item.assignee_id,item.latest_review?.actor_id]):[])
@@ -207,8 +209,8 @@ export function ReviewCenterPage(){
      <p className="text-xs font-semibold tracking-wider text-primary">HUMAN + AGENT / REVIEW</p>
      <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">协作审核</h1>
      <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-      汇总工作项最新审核状态与真实 Reviewer 证据。Qual 不自动批准、不运行 Agent，
-      Reviewer 权限与 Auditor 审计权限始终独立。
+      先呈现 Reviewer 待决策与外部 AgentRun/Event 的注意力线索，仍通过现有工作项执行审核。
+      Qual 不自动批准、不运行 Agent，Reviewer 与 Auditor 权限始终独立。
      </p>
     </div>
     {canManage&&<Button size="sm" variant="outline" asChild>
@@ -241,7 +243,11 @@ export function ReviewCenterPage(){
      </div>
 
      {canRead?(
-      <section className="flex flex-col gap-4" aria-label="工作项审查与整改队列">
+      <>
+       <AttentionInboxPanel projectID={projectID} canRead={canRead} canReview={canReview}/>
+       <details onToggle={event=>setShowReviewDetails(event.currentTarget.open)} className="min-w-0 rounded-xl border border-border px-4 py-3 sm:px-5">
+        <summary className="cursor-pointer rounded py-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">展开现有 Reviewer 审核明细与原始历史（按需）</summary>
+        <section className="mt-4 flex flex-col gap-4" aria-label="工作项审查与整改队列">
        <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
          <h2 className="flex items-center gap-2 text-lg font-semibold"><Scale aria-hidden="true" className="size-5 text-primary"/>项目审查队列</h2>
@@ -294,7 +300,9 @@ export function ReviewCenterPage(){
         队列使用有界 offset 分页，刷新后可能因并发状态变化而重排；所有审批操作须在工作项详情按当前版本完成。
         原始 Audit 不属于 work:read 可见信息。
        </p>
-      </section>
+        </section>
+       </details>
+      </>
      ):(
       <p className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 p-4 text-sm text-muted-foreground">
        <ClipboardList aria-hidden="true" className="size-4 shrink-0"/>
