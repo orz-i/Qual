@@ -121,3 +121,11 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 此外，新建的 Spool 现在必须持久保存双份绑定根目录路径的 `active-source-origin*.json`，只有 OpenSpool 首次创建真正不存在的目录才可生成。未知旧 Spool 不能自动取得新来源身份；恢复签名 ZIP 不携带 ACTIVE 见证。即使意外**同时删除两份 quarantine**，没有 ACTIVE 见证的已恢复快照仍不能被 OpenSpool/serve/once/Enqueue 当作新来源，从而避免一种 fail-open 恢复路径。迁移旧合法目录必须受控保留并核对完整事实，不可通过清空历史重建 Spool。隔离 Go Race 49 条和真实临时 Goose17/12 专项19条已通过。
 
 这仍不是完整的可信来源账本对账；同 OS UID 可伪造/删改本地见证、旧版二进制可忽略它。生产激活前必须完成由不同真实授权主体维护的完整来源事实水位／独立核验和部署隔离。详见 [QUAL-51 恢复隔离设计与剩余阻断项](../../docs/security/qual51-restored-snapshot-quarantine-2026-11-04.md) 及 [新鲜 Spool 双来源标记门禁](../../docs/security/qual51-origin-witness-deny-by-default-2026-11-04.md)。
+
+### QUAL-51：三方签名来源对账只读验证层（未具备可信生产签发服务）
+
+新增独立 Go 库接口 `VerifyRestoredSourceEvidence`，要求三个分别由外部受信任公钥验证的 Ed25519 规范签名声明：连续的 GitHub 来源事件账本、对应的 Qual Event/Project/WorkItem/Thread 证明、以及绑定恢复快照 SHA、前两份账本哈希和最新来源水位的 Operator 围栏。密钥必须由真正独立的安全域固定；**本 Adapter 不生成生产签名、没有内置来源账本生产者，也不根据本地证明发放恢复授权**。
+
+只读检查在恢复队列双锁内进行：发现 T0 旧备份缺失 T1 来源事实、Qual Event 错配、来源序列缺口、重复已签 Body、过期水位或伪造签名时拒绝或标记不一致。即使所有提交的证明一一对应，返回值也始终是 `activation_authorized=false`、`latest_source_externally_proven=false`、`requires_independent_review=true`；恢复队列继续 Quarantined，绝不启动 `serve`/`once`。
+
+源码上限是从第一个来源事实开始连续的 10,000 个事件和总计 4 MiB 的规范证据；它不能单独承担无限历史生产账本或认证不同真实 Human/OS 主体。真实来源签发、Qual 可信导出、外部最新水位和受权激活**均未实现**。本地仅使用随机测试 Ed25519 私钥验证实现与安全负例。协议和发布阻断详见 [QUAL-51 独立签名来源对账的工程协议](../../docs/security/qual51-independent-signed-reconciliation-2026-11-03.md)。
