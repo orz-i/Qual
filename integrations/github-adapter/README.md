@@ -118,4 +118,6 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 
 从本阶段候选代码起，RestoreSignedBackup 在对外发布之前为每个恢复队列持久写入双份 owner-only 0600 恢复标记，强制 Quarantined 状态；一个标记缺失、权限错误或内容不匹配，OpenSpool 会拒绝。受控 inspect 可查看 recovery 和 capacity.ingress_blocked，serve/once、Enqueue/PinTarget/Update、人工重排和归档都会 fail closed。即使新的操作员将已恢复数据再次备份并恢复，它也仍然被隔离。本地无 --approve 绕过开关，不接触 Human-only HMAC。
 
-这仍不是完整的可信来源账本对账；同 OS UID 可篡改双方标记、旧版二进制可忽略它。生产激活前必须完成由不同真实授权主体维护的完整来源事实水位／独立核验和部署隔离。详见 [QUAL-51 恢复隔离设计与剩余阻断项](../../docs/security/qual51-restored-snapshot-quarantine-2026-11-04.md)。
+此外，新建的 Spool 现在必须持久保存双份绑定根目录路径的 `active-source-origin*.json`，只有 OpenSpool 首次创建真正不存在的目录才可生成。未知旧 Spool 不能自动取得新来源身份；恢复签名 ZIP 不携带 ACTIVE 见证。即使意外**同时删除两份 quarantine**，没有 ACTIVE 见证的已恢复快照仍不能被 OpenSpool/serve/once/Enqueue 当作新来源，从而避免一种 fail-open 恢复路径。迁移旧合法目录必须受控保留并核对完整事实，不可通过清空历史重建 Spool。隔离 Go Race 49 条和真实临时 Goose17/12 专项19条已通过。
+
+这仍不是完整的可信来源账本对账；同 OS UID 可伪造/删改本地见证、旧版二进制可忽略它。生产激活前必须完成由不同真实授权主体维护的完整来源事实水位／独立核验和部署隔离。详见 [QUAL-51 恢复隔离设计与剩余阻断项](../../docs/security/qual51-restored-snapshot-quarantine-2026-11-04.md) 及 [新鲜 Spool 双来源标记门禁](../../docs/security/qual51-origin-witness-deny-by-default-2026-11-04.md)。
