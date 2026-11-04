@@ -1,0 +1,40 @@
+# QUAL-50 · GitHub Adapter signed spool snapshot / isolated restore
+
+**Scope**: external Go Adapter only, private local pilot. Depends on PR #1 (GitHub signature ingestion, durable replay-safe Archive and Index). Does not read any Human production signing secret, actual GitHub App credentials, operator backups, live Qual database, or change the live server. This is an independently reviewed-operator design, **not** evidence of a second real Human reviewer.
+
+## Trust and operational model
+
+A trusted Human Operator must inject a **separate, independent high-entropy key** as process environment variable QUAL_GITHUB_BACKUP_HMAC_KEY (32–256 bytes). It must not be the Qual database/Pi/Human PAT, GitHub OAuth token, webhook secret, or the Qual PostgreSQL/S3 operator HMAC signing key. Do not type the value into shell history, write it in Git, or include it as a command argument.
+
+The following invocations assume a properly protected OS process environment and an existing configured owner-only spool root. ZIP and detached signature outputs must not exist, must be absolute paths, and their parent must be owned by the effective operator UID and not writable by group/others.
+
+    qual-github-adapter inspect
+    qual-github-adapter backup --out /owner-only-backups/adapter-2026-11-04.zip --approve
+
+After an operator-controlled transfer/storage of BOTH the ZIP and its .sig file in independently protected storage, restore only into a **new, nonexistent** owner-only directory:
+
+    qual-github-adapter restore --file /owner-only-backups/adapter-2026-11-04.zip --into /owner-only-restore/new-adapter-spool --approve
+
+This restore does **not** automatically switch the configured Adapter, restart any service, change the mapping/authorization, submit Qual Events, or reopen production ingress. A real authorized Operator must validate recovered event identities and target mappings, then independently decide on recovery/cutover. Manual restore of a production Operator snapshot has **not** been performed.
+
+## Integrity design
+
+1. A snapshot first acquires worker then queue cross-process locks, ensuring no signed ingress or Qual worker mutation races with its read. It reconciles existing Pending/Delivered crash states and archived SHA indexes, then scans strictly named owner-only 0600 JSON records from Pending, Delivered, Archived, and ArchiveIndex. Files/summary fields are safe structured metadata, never raw webhook payloads, comments or PATs. No files are deleted.
+2. The snapshot is an uncompressed ZIP of those records and a deterministic manifest containing per-file SHA-256, relative path and byte count. The full ZIP is authenticated with HMAC-SHA256; the lowercase hex tag is stored separately in a 0600 .sig file. Both outputs are fsynced and published without logging their contents. Partial publication is never reported as a successful backup.
+3. Restore requires the matching independent key and intact detached tag. HMAC is verified over the **entire ZIP before creating any output directory**, then strict path, mode, size, count, manifest SHA, duplicate, zip-slip and compression-bomb checks run. All files are staged under a randomly named 0700 directory, fsynced, checked by the normal Spool integrity/reconciliation logic, then renamed atomically into an absent destination.
+4. ArchiveIndex and Archived records preserve original GitHub Delivery ID, original HMAC-verified Body SHA-256, Qual Event UUID and failed/retried history. A restored Adapter refuses changes to the original Delivery ID and will not convert the same originally signed Body under another unsigned Delivery UUID into a new Event.
+5. Out-of-bound inputs fail closed: no signing key, untrusted owner/mode, invalid path, wrong HMAC, missing signature, changed ZIP bytes, malicious ZIP path, target exists, invalid referenced spool metadata, insufficient free space or failed file/dir fsync.
+
+## Limits and unresolved production prerequisites
+
+- This is an **integrity-authenticated backup, not encrypted storage**. Transport and remote storage must provide separate confidentiality, access isolation, backup retention and key management. Human and PI sharing a macOS UID are not strongly isolated.
+- One signed snapshot is explicitly capped at **100,000 records**, **512 MiB raw records** and **600 MiB total ZIP** (16 MiB manifest). Overflow stops rather than truncating history. Unbounded hot+Archived growth, multi-volume backup/retention, independent disk volume/backups, quota enforcement and continuous monitoring remain separate QUAL-50 release gates.
+- The 64 MiB spool write reserve is for small journal records, not sufficient for a large backup or restore. Restore independently checks adequate available space before staging, but production recovery requires dedicated storage and reliable external Operator backups.
+- Keyed HMAC library/CLI and actual disposable tests use **synthetic test-only keys**. This is not a verified signed Human Operator backup or real isolated production restoration.
+- QUAL-37 real GitHub App Webhook delivery, TLS ingress, Human-reviewed mapping, independent Principal authorization, real PI session resume, and full independent security acceptance remain Pending; QUAL-36 and QUAL-50 should not be marked Done solely because CI is green.
+
+## Real verification
+
+The external Go module tests run Go Race/Vet on signed backup/restore, wrong/tampered key/tag/ZIP, destination overwrite refusal, signed malicious ZIP paths, replay of archived records after isolated restore and true filesystem disk probes with injected low-space failure. A separate protected Goose17 integration test builds actual Adapter binaries, records a locally synthesized signed event to disposable PostgreSQL/S3, archives, runs the signed backup/restore as distinct Adapter subprocesses, reopens restored private spool in a second listener, verifies old signed bytes under a different Delivery UUID are deduplicated and confirms no additional Qual Event/Audit. No default Qual DB mutation.
+
+The source, test run, GitHub CI and official Qual artifact evidence must remain explicitly separated, with the **same actual commit SHA** in each reference.

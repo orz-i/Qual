@@ -97,3 +97,11 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 - 归档是热目录容量恢复，不是安全删除或长期磁盘容量解决方案：历史身份/内容索引均永久留存，磁盘消耗随真实 GitHub Event 单调增长。需要另行配置可信独立备份、磁盘监测、恢复演练和已授权外部调度；绝不直接清空 Archived 或 archive-index 来回收空间。--approve 依旧是同 macOS UID 下的 Operator 约定，不具独立 Human 审批。
 
 完整故障模型、验证入口及未满足的生产前提见 [已投递安全归档设计和验证](../../docs/security/pr1-safe-delivered-archive-2026-11-04.md)。
+
+
+## QUAL-50 受控本机磁盘与离线签名恢复（叠加变更）
+
+- 新增磁盘可用空间水位/总容量可见性：低于 64 MiB 可用空间时新的 Spool 写入 fail closed 503；物理磁盘使用 >=80% 或可用空间 <=256 MiB 时 inspect 的 disk_near_limit 为真。不可对旧有效重放虚构新条目或丢失既有 Ready Event。
+- 增加显式本机 Operator backup --out <fresh-absolute.zip> --approve 和 restore --file <signed.zip> --into <new-directory> --approve；只使用由可信 Operator **独立安全注入**的 QUAL_GITHUB_BACKUP_HMAC_KEY，不得复用 GitHub Webhook/Qual PI/Human/Operator PostgreSQL HMAC Key。签名为 HMAC-SHA256 完整性，**不加密**备份。恢复只到不存在的新目录，不自动替换正式 Adapter、授权或启动外部 PI。
+- 只备份已脱敏的 Pending/Delivered/Archived/ArchiveIndex；不会复制原始第三方 Webhook Body 或秘密凭据。备份/恢复都会失败关闭而不毁损原有身份与失败历史；官方 Human-only Key 的真实部署、可信外部备份与隔离恢复演练仍 Pending。
+- [QUAL-50 磁盘保护](../../docs/security/qual50-adapter-disk-watermark-2026-11-04.md) 与 [安全签名归档/隔离恢复](../../docs/security/qual50-signed-spool-backup-2026-11-04.md) 分别记录实际测试、性能和安全边界。
