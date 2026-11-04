@@ -255,8 +255,27 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if s, _ := webhook(delivery, secret); s != 202 {
 		t.Fatalf("signed redelivery HTTP%d", s)
 	}
+	// The external operator intentionally archives only already-delivered
+	// receipts. Check a REAL second adapter process and the REAL Goose17
+	// Event ledger: the indexed archived SHA still blocks a new unsigned ID.
+	archive := exec.Command(binary, "archive", "1", "--approve")
+	archive.Env = environment
+	archivedOutput, err := archive.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bounded external archive failed: %v output_bytes=%d", err, len(archivedOutput))
+	}
+	var archiveReceipt map[string]any
+	if err := json.Unmarshal(archivedOutput, &archiveReceipt); err != nil ||
+		archiveReceipt["archived"] != float64(1) ||
+		archiveReceipt["remaining_hot"] != float64(0) ||
+		archiveReceipt["total_archived"] != float64(1) {
+		t.Fatalf("archived receipt not durably moved: %v %v", archiveReceipt, err)
+	}
+	if s, body := webhook(uuid.NewString(), secret); s != 202 || body["new"] != false {
+		t.Fatalf("archived signed bytes recreated a new event: HTTP%d %v", s, body)
+	}
 	if stats := doOnce(); stats["attempted"] != float64(0) {
-		t.Fatalf("replayed event invoked Qual again: %v", stats)
+		t.Fatalf("archived/replayed event invoked Qual again: %v", stats)
 	}
 	var eventAudits int
 	if err := f.pool.QueryRow(ctx, "SELECT count(*) FROM qual.audit_records WHERE project_id=$1 AND operation='external_event.recorded'", f.project).Scan(&eventAudits); err != nil || eventAudits != 1 {

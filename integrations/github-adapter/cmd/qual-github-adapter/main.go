@@ -52,12 +52,16 @@ func output(data any) {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue <delivery-id> --approve --reason-code <auth-restored|link-repaired|transient-verified>")
+		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue <delivery-id> --approve --reason-code <auth-restored|link-repaired|transient-verified> | archive <1..500> --approve")
 	}
 	command := os.Args[1]
 	if command == "requeue" {
 		if len(os.Args) != 6 || os.Args[3] != "--approve" || os.Args[4] != "--reason-code" {
 			return fmt.Errorf("manual requeue requires delivery ID, --approve and --reason-code")
+		}
+	} else if command == "archive" {
+		if len(os.Args) != 4 || os.Args[3] != "--approve" {
+			return fmt.Errorf("archiving requires a bounded count and explicit --approve")
 		}
 	} else if len(os.Args) != 2 || (command != "serve" && command != "once" && command != "inspect") {
 		return fmt.Errorf("unknown command or unexpected argument")
@@ -67,6 +71,16 @@ func run() error {
 		return fmt.Errorf("adapter repository/spool preflight failed")
 	}
 	switch command {
+	case "archive":
+		limit, err := strconv.Atoi(os.Args[2])
+		if err != nil || limit < 1 || limit > 500 {
+			return fmt.Errorf("archive count must be 1..500")
+		}
+		archived, err := spool.ArchiveDelivered(limit)
+		if err != nil {
+			return fmt.Errorf("archive refused; inspect owner-only spool and restore index integrity")
+		}
+		output(archived)
 	case "requeue":
 		if err := spool.RequeueAfterReview(os.Args[2], os.Args[5]); err != nil {
 			return fmt.Errorf("delivery not approved for retry; inspect the durable spool")

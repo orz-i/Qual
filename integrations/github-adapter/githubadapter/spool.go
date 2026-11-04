@@ -66,7 +66,7 @@ func OpenSpool(root string) (*Spool, error) {
 	if err := safeDir(root); err != nil {
 		return nil, err
 	}
-	for _, sub := range []string{"pending", "delivered"} {
+	for _, sub := range []string{"pending", "delivered", "archived", "archive-index"} {
 		if err := safeDir(filepath.Join(root, sub)); err != nil {
 			return nil, err
 		}
@@ -75,7 +75,14 @@ func OpenSpool(root string) (*Spool, error) {
 	// A killed worker may have synced the Delivered record but not yet
 	// removed the old Pending file. Reconcile before any new publishing.
 	err := spool.withLock("worker", func() error {
-		return spool.withLock("queue", spool.reconcileLocked)
+		return spool.withLock("queue", func() error {
+			// Reconcile old Pending+Delivered overlap BEFORE a partially
+			// indexed Delivered receipt is moved into Archived.
+			if err := spool.reconcileLocked(); err != nil {
+				return err
+			}
+			return spool.reconcileArchiveLocked()
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -84,7 +91,7 @@ func OpenSpool(root string) (*Spool, error) {
 }
 
 func (s *Spool) path(sub, id string) (string, error) {
-	if !deliveryIDRE.MatchString(id) || (sub != "pending" && sub != "delivered") {
+	if !deliveryIDRE.MatchString(id) || (sub != "pending" && sub != "delivered" && sub != "archived") {
 		return "", ErrSpool
 	}
 	return filepath.Join(s.Root, sub, id+".json"), nil
@@ -144,7 +151,7 @@ func (s *Spool) read(sub, id string) (Delivery, bool, error) {
 		(saved.State != "pending" && saved.State != "blocked_mapping" &&
 			saved.State != "blocked_auth" && saved.State != "conflict" &&
 			saved.State != "retry" && saved.State != "manual_review" && saved.State != "delivered") ||
-		(sub == "delivered" && saved.State != "delivered") ||
+		((sub == "delivered" || sub == "archived") && saved.State != "delivered") ||
 		(sub == "pending" && saved.State == "delivered") {
 		return Delivery{}, false, ErrSpool
 	}
@@ -296,12 +303,24 @@ func (s *Spool) reconcileLocked() error {
 		if err != nil || !exists {
 			return ErrSpool
 		}
-		done, committed, err := s.read("delivered", id)
+		hot, hotDone, err := s.read("delivered", id)
 		if err != nil {
 			return err
 		}
-		if !committed {
+		cold, coldDone, err := s.read("archived", id)
+		if err != nil || hotDone && coldDone {
+			return ErrSpool
+		}
+		if !hotDone && !coldDone {
 			continue
+		}
+		done := hot
+		if coldDone {
+			done = cold
+			indexed, exists, err := s.readArchiveIndex(done.PayloadSHA256)
+			if err != nil || !exists || indexed.DeliveryID != id {
+				return ErrSpool
+			}
 		}
 		if old.stableIdentity() != done.stableIdentity() ||
 			old.RepositoryID != done.RepositoryID || old.RepositoryName != done.RepositoryName ||
@@ -326,6 +345,17 @@ func (s *Spool) reconcileLocked() error {
 // on an untrusted, unsigned X-GitHub-Delivery header for replay prevention.
 // No secondary index can get out of sync in a power-loss window.
 func (s *Spool) payloadSeenLocked(in Delivery) (bool, error) {
+	// A content-addressed receipt remains queryable even after a completed
+	// delivery moves out of the bounded hot directory. Never evict this key.
+	if saved, exists, err := s.readArchiveIndex(in.PayloadSHA256); err != nil {
+		return false, err
+	} else if exists {
+		if saved.RepositoryID != in.RepositoryID ||
+			saved.RepositoryName != in.RepositoryName {
+			return false, ErrConflict
+		}
+		return true, nil
+	}
 	for _, sub := range []string{"pending", "delivered"} {
 		entries, err := os.ReadDir(filepath.Join(s.Root, sub))
 		if err != nil {
@@ -398,7 +428,7 @@ func (s *Spool) Enqueue(d Delivery) (bool, error) {
 		if err := s.reconcileLocked(); err != nil {
 			return err
 		}
-		for _, dir := range []string{"pending", "delivered"} {
+		for _, dir := range []string{"pending", "delivered", "archived"} {
 			saved, exists, err := s.read(dir, d.DeliveryID)
 			if err != nil {
 				return err
@@ -585,6 +615,7 @@ type CapacityStatus struct {
 	PendingLimit   int  `json:"pending_limit"`
 	DeliveredUsed  int  `json:"delivered_used"`
 	DeliveredLimit int  `json:"delivered_limit"`
+	ArchivedUsed   int  `json:"archived_used"`
 	NearLimit      bool `json:"near_limit"`
 	IngressBlocked bool `json:"ingress_blocked"`
 }
@@ -596,7 +627,7 @@ func (s *Spool) Capacity() (CapacityStatus, error) {
 	}
 	pending := 0
 	for state, count := range counts {
-		if state != "delivered" {
+		if state != "delivered" && state != "archived" {
 			pending += count
 		}
 	}
@@ -604,6 +635,7 @@ func (s *Spool) Capacity() (CapacityStatus, error) {
 	return CapacityStatus{
 		PendingUsed: pending, PendingLimit: MaxPending,
 		DeliveredUsed: delivered, DeliveredLimit: MaxDelivered,
+		ArchivedUsed:   counts["archived"],
 		NearLimit:      pending*5 >= MaxPending*4 || delivered*5 >= MaxDelivered*4,
 		IngressBlocked: pending >= MaxPending || delivered >= MaxDelivered,
 	}, nil
@@ -623,5 +655,10 @@ func (s *Spool) Counts() (map[string]int, error) {
 		return nil, err
 	}
 	states["delivered"] = len(files)
+	archived, err := os.ReadDir(filepath.Join(s.Root, "archived"))
+	if err != nil {
+		return nil, err
+	}
+	states["archived"] = len(archived)
 	return states, nil
 }
