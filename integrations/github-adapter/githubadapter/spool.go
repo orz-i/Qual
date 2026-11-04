@@ -68,8 +68,22 @@ func OpenSpool(root string) (*Spool, error) {
 	if err := safeParent(filepath.Dir(root)); err != nil {
 		return nil, err
 	}
+	// Only a truly non-existent root is allowed to receive new ACTIVE
+	// origin witnesses. Existing directories missing their witnesses MUST
+	// fail closed, including restored snapshots with deleted quarantine
+	// markers. Never silently auto-upgrade an ambiguous legacy spool.
+	_, statErr := os.Lstat(root)
+	fresh := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !fresh {
+		return nil, statErr
+	}
 	if err := safeDir(root); err != nil {
 		return nil, err
+	}
+	if fresh {
+		if err := createFreshOrigin(root); err != nil {
+			return nil, err
+		}
 	}
 	for _, sub := range []string{"pending", "delivered", "archived", "archive-index"} {
 		if err := safeDir(filepath.Join(root, sub)); err != nil {
@@ -80,12 +94,18 @@ func OpenSpool(root string) (*Spool, error) {
 	// Validate any restore quarantine metadata even for read-only OpenSpool;
 	// a malformed/mispermissioned marker cannot silently become an active
 	// queue. Ordinary never-restored pilot spools continue to open normally.
-	if _, err := spool.RecoveryStatus(); err != nil {
+	recovery, err := spool.RecoveryStatus()
+	if err != nil {
 		return nil, err
+	}
+	if !recovery.Quarantined {
+		if err := requireFreshOrigin(root); err != nil {
+			return nil, err
+		}
 	}
 	// A killed worker may have synced the Delivered record but not yet
 	// removed the old Pending file. Reconcile before any new publishing.
-	err := spool.withLock("worker", func() error {
+	err = spool.withLock("worker", func() error {
 		return spool.withLock("queue", func() error {
 			// Reconcile old Pending+Delivered overlap BEFORE a partially
 			// indexed Delivered receipt is moved into Archived.

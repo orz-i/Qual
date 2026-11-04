@@ -65,14 +65,7 @@ func (s *Spool) RecoveryStatus() (RecoveryStatus, error) {
 }
 
 func (s *Spool) requireActive() error {
-	info, err := s.RecoveryStatus()
-	if err != nil {
-		return err
-	}
-	if info.Quarantined {
-		return ErrRestoredQuarantine
-	}
-	return nil
+	return s.verifiedActiveOrigin()
 }
 
 // installRecoveryQuarantine is called on an isolated stage after verifying

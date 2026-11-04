@@ -378,6 +378,27 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	if len(replayedOut) == 0 {
 		t.Fatal("restored worker did not fail closed with a diagnostic")
 	}
+	// QUAL-51 defense in depth: stripping BOTH local quarantine markers
+	// from the stale T0 snapshot must not silently certify it as a fresh
+	// source. A restored ZIP never carries active-origin evidence; a source
+	// that actually predates the T1 fact cannot regain ingress or EventWrite.
+	for _, marker := range []string{"recovery-quarantine.json", "recovery-witness.json"} {
+		if err := os.Remove(filepath.Join(restoredDir, marker)); err != nil {
+			t.Fatalf("remove test-only quarantine witness: %v", err)
+		}
+	}
+	for _, action := range []string{"inspect", "serve", "once"} {
+		command := exec.Command(binary, action)
+		command.Env = append(restoredEnv, "QUAL_GITHUB_LISTEN_ADDR=127.0.0.1:18991")
+		out, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("stripped-quarantine old source silently became active via %s", action)
+		}
+		if len(out) == 0 {
+			t.Fatalf("stripped-quarantine %s returned no fail-closed diagnostic", action)
+		}
+	}
+	// The real authoritative Qual Event/Audit facts must still be unchanged.
 	// No further Qual API or database action is caused by this quarantined
 	// T0 snapshot, despite the original source having persisted T1 after it.
 	// This is *not* proof of backup freshness; it is active refusal.
