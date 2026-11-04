@@ -102,6 +102,33 @@ func snapshotZipEntry(z *zip.Writer, name string, data []byte) error {
 	return err
 }
 
+func checkBackupDestinationSpace(stats filesystemStats, payloadBytes uint64, records int) error {
+	if stats.TotalBytes == 0 || stats.AvailableBytes > stats.TotalBytes {
+		return ErrSpool
+	}
+	if records < 0 || records > maxBackupRecords ||
+		payloadBytes > uint64(maxBackupRecordBytes) {
+		return ErrInvalid
+	}
+	// ZIP headers + manifest + directory metadata are bounded with a
+	// conservative per-record budget; leave an additional safe spool reserve.
+	required := payloadBytes + uint64(records)*1024 + diskReserveBytes
+	if stats.AvailableBytes < required {
+		return ErrFull
+	}
+	return nil
+}
+
+// Publishing via hard-link fails with EEXIST instead of overwriting an
+// existing snapshot/signature between the preflight and final publication.
+// Source temp and destination are required to be in the same owner-only dir.
+func publishSnapshotFileNoReplace(staged, published string) error {
+	if err := os.Link(staged, published); err != nil {
+		return err
+	}
+	return os.Remove(staged)
+}
+
 func writeAndSyncExclusive(path string, contents []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
@@ -139,6 +166,7 @@ func (s *Spool) CreateSignedBackup(outZip string, key []byte) (SignedBackupResul
 				return err
 			}
 			var names []string
+			var estimatedRaw uint64
 			for _, sub := range snapshotDirectories {
 				entries, err := os.ReadDir(filepath.Join(s.Root, sub))
 				if err != nil {
@@ -152,6 +180,15 @@ func (s *Spool) CreateSignedBackup(outZip string, key []byte) (SignedBackupResul
 					if entry.IsDir() || !validSnapshotEntry(name) {
 						return ErrSpool
 					}
+					fi, err := entry.Info()
+					if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0600 ||
+						fi.Size() <= 0 || fi.Size() > MaxRecordBytes {
+						return ErrSpool
+					}
+					estimatedRaw += uint64(fi.Size())
+					if estimatedRaw > uint64(maxBackupRecordBytes) {
+						return ErrFull
+					}
 					names = append(names, name)
 				}
 			}
@@ -159,6 +196,13 @@ func (s *Spool) CreateSignedBackup(outZip string, key []byte) (SignedBackupResul
 				return ErrFull
 			}
 			sort.Strings(names)
+			available, err := actualFilesystemStats(parent)
+			if err != nil {
+				return err
+			}
+			if err := checkBackupDestinationSpace(available, estimatedRaw, len(names)); err != nil {
+				return err
+			}
 			zipTemp, err := os.CreateTemp(parent, ".qual-snapshot-*.zip")
 			if err != nil {
 				return err
@@ -250,10 +294,10 @@ func (s *Spool) CreateSignedBackup(outZip string, key []byte) (SignedBackupResul
 			}
 			// The detached signature is published first. Either partial
 			// publication makes restore reject; it never means success.
-			if err := os.Rename(sigTempPath, outZip+".sig"); err != nil {
+			if err := publishSnapshotFileNoReplace(sigTempPath, outZip+".sig"); err != nil {
 				return err
 			}
-			if err := os.Rename(zipTmpPath, outZip); err != nil {
+			if err := publishSnapshotFileNoReplace(zipTmpPath, outZip); err != nil {
 				return err
 			}
 			if err := syncDirectory(parent); err != nil {
