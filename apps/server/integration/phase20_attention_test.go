@@ -196,6 +196,33 @@ func TestQual34AttentionScopedDeduplicatedReadOnly(t *testing.T) {
 		t.Fatalf("GET created audit records %d->%d", before, after)
 	}
 
+	// A routine WorkItem comment changes updated_at, but it is not an explicit
+	// acknowledgement of a needs_input event and must not silently clear it.
+	signalID := signal["id"].(string)
+	code, signalCurrent, _ := request(t, "GET", base+"/work-items/"+signalID, f.agent, "", "", nil)
+	if code != 200 {
+		t.Fatalf("load signal WorkItem: HTTP%d %v", code, signalCurrent)
+	}
+	code, commented, _ := request(t, "POST", base+"/work-items/"+signalID+"/comments",
+		f.agent, "qual34-unrelated-comment", "", map[string]any{
+			"body":             "Unrelated progress note, not an acknowledgement of external input",
+			"expected_version": signalCurrent["version"],
+		})
+	if code != 201 {
+		t.Fatalf("unrelated comment: HTTP%d %v", code, commented)
+	}
+	stillPending := check(endpoint+"?limit=50", f.viewer, 200)
+	foundPending := false
+	for _, raw := range stillPending["items"].([]any) {
+		x := raw.(map[string]any)
+		if x["work_item_id"] == signalID && x["reason"] == "event_needs_input" {
+			foundPending = true
+		}
+	}
+	if !foundPending {
+		t.Fatalf("unrelated WorkItem comment silently dismissed needs_input: %v", stillPending)
+	}
+
 	// Real audited re-submission supersedes the old needs_work for QUEUE
 	// presentation but does not delete its immutable Reviewer record.
 	status, updated, _ := request(t, "POST", base+"/work-items/"+needsID+"/transitions",
