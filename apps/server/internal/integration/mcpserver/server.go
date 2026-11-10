@@ -4,9 +4,7 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,24 +12,15 @@ import (
 	identity "qual/internal/identity/application"
 	"qual/internal/work/application"
 	"qual/internal/work/domain"
-	contextapp "qual/internal/workcontext/application"
 )
 
-type Bridge struct {
-	Auth    identity.Authenticator // optional in-process test/service adapter
-	Work    application.Service    // optional in-process test/service adapter
-	Context *contextapp.Service    // optional authorized v2 recovery projection
-	APIURL  string                 // external stdio adapter uses only REST+scoped PAT
-	Bearer  string
+// Config is the single supported MCP transport: stdio tools proxy through
+// the authenticated REST API. No in-process database/service bypass exists.
+type Config struct {
+	APIURL string
+	Bearer string
 }
 
-func (b Bridge) actor(ctx context.Context) (identity.Actor, error) {
-	actor, err := b.Auth.Authenticate(ctx, b.Bearer)
-	if err != nil {
-		return actor, fmt.Errorf("UNAUTHENTICATED")
-	}
-	return actor, nil
-}
 func parseIDs(project, item string) (uuid.UUID, uuid.UUID, error) {
 	pid, err := uuid.Parse(project)
 	if err != nil || pid == uuid.Nil {
@@ -92,8 +81,8 @@ type ItemArgs struct {
 	ItemID    string `json:"item_id"`
 }
 
-// Empty section preserves the existing MCP v1 response for old callers.
-// Opt-in section reads one bounded, separately authorized v2 projection.
+// A missing section now uses authorized Context v2 overview. All requests
+// share one versioned server-side projection and bounded cursor semantics.
 type ContextArgs struct {
 	ItemArgs
 	Section string `json:"section,omitempty"`
@@ -116,6 +105,10 @@ type CreateArgs struct {
 	AcceptanceCriteria []string           `json:"acceptance_criteria,omitempty"`
 	BugDetails         *domain.BugDetails `json:"bug_details,omitempty"`
 }
+type ReassignArgs struct {
+	WriteArgs
+	NewAssigneeID string `json:"new_assignee_id"`
+}
 type UpdateArgs struct {
 	WriteArgs
 	Title       *string `json:"title,omitempty"`
@@ -135,251 +128,84 @@ type ActivityArgs struct {
 	Limit     int    `json:"limit,omitempty"`
 }
 
-func New(b Bridge) *mcp.Server {
+func New(b Config) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "qual", Version: "0.3.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_search", Description: "Read a project-scoped page of Task/Bug work items. No execution or scheduling."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in SearchArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_search", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			project, _, err := parseIDs(in.ProjectID, "")
-			if err != nil {
-				return nil, nil, err
-			}
-			page, err := b.Work.List(ctx, actor, project, application.Filter{
-				Status: domain.Status(in.Status), Kind: domain.Kind(in.Kind), Limit: in.Limit, Cursor: in.Cursor,
-			})
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"items": page.Items, "next_cursor": page.NextCursor}, nil
+			data, err := b.remote(ctx, "work_item_search", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_get", Description: "Get one authorized work item by UUID."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ItemArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_get", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, id, err := parseIDs(in.ProjectID, in.ItemID)
-			if err != nil {
-				return nil, nil, err
-			}
-			item, err := b.Work.Get(ctx, actor, p, id)
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"work_item": item}, nil
+			data, err := b.remote(ctx, "work_item_get", in)
+			return nil, data, err
 		})
-	mcp.AddTool(server, &mcp.Tool{Name: "work_item_get_context", Description: "Persisted work context: legacy v1 with no section; explicit bounded v2 section with cursor. Never AI generated."},
+	mcp.AddTool(server, &mcp.Tool{Name: "work_item_capabilities_get", Description: "Fresh server-derived task-scoped/legacy my_capacity and allowed_actions for the authenticated Principal only. Read-only UX hint; writes reauthorize."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in ItemArgs) (*mcp.CallToolResult, map[string]any, error) {
+			data, err := b.remote(ctx, "work_item_capabilities_get", in)
+			return nil, data, err
+		})
+	mcp.AddTool(server, &mcp.Tool{Name: "work_item_get_context", Description: "Persisted bounded authorized WorkItem Context v2; omitted section defaults to overview. Cursor pages are versioned; never AI-generated."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ContextArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_get_context", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, id, err := parseIDs(in.ProjectID, in.ItemID)
-			if err != nil {
-				return nil, nil, err
-			}
-			if in.Section != "" || in.Limit != 0 || in.Cursor != "" {
-				if b.Context == nil {
-					return nil, nil, errors.New("CONTEXT_UNAVAILABLE")
-				}
-				if _, err := contextSectionQuery(in.Section, in.Limit, in.Cursor); err != nil {
-					return nil, nil, err
-				}
-				section := in.Section
-				if section == "" {
-					section = "overview"
-				}
-				page, err := b.Context.Get(ctx, actor, p, id, contextapp.Input{Section: contextapp.Section(section), Limit: in.Limit, Cursor: in.Cursor})
-				if err != nil {
-					if errors.Is(err, contextapp.ErrInvalidQuery) {
-						return nil, nil, errors.New("VALIDATION_ERROR")
-					}
-					if errors.Is(err, contextapp.ErrStaleCursor) {
-						return nil, nil, errors.New("CONTEXT_CHANGED")
-					}
-					if errors.Is(err, contextapp.ErrScanBudget) {
-						return nil, nil, errors.New("CONTEXT_QUERY_BUDGET")
-					}
-					return nil, nil, userError(err)
-				}
-				raw, err := json.Marshal(page)
-				if err != nil {
-					return nil, nil, errors.New("INVALID_SERVER_RESPONSE")
-				}
-				var data map[string]any
-				if err := json.Unmarshal(raw, &data); err != nil {
-					return nil, nil, errors.New("INVALID_SERVER_RESPONSE")
-				}
-				return nil, data, nil
-			}
-			item, err := b.Work.Get(ctx, actor, p, id)
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			comments, err := b.Work.Comments(ctx, actor, p, id)
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			deps, err := b.Work.Dependencies(ctx, actor, p, id)
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			if len(comments) > 10 {
-				comments = comments[:10]
-			}
-			return nil, map[string]any{"schema_version": 1, "work_item": item, "recent_comments": comments, "dependencies": deps, "context_revision": item.Version}, nil
+			data, err := b.remote(ctx, "work_item_get_context", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_create", Description: "Create a persisted Task or Bug in the authorized project. Does not start an Agent."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in CreateArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_create", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, _, err := parseIDs(in.ProjectID, "")
-			if err != nil {
-				return nil, nil, err
-			}
-			item, err := b.Work.Create(ctx, actor, p, domain.Draft{
-				Kind: domain.Kind(in.Kind), Title: in.Title, Description: in.Description,
-				Priority: domain.Priority(in.Priority), AcceptanceCriteria: in.AcceptanceCriteria,
-				BugDetails: in.BugDetails,
-			}, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"work_item": item}, nil
+			data, err := b.remote(ctx, "work_item_create", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_claim", Description: "Atomically claim an unassigned Task/Bug, version protected; never launches an Agent."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in WriteArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_claim", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, id, err := parseIDs(in.ProjectID, in.ItemID)
-			if err != nil {
-				return nil, nil, err
-			}
-			item, err := b.Work.Claim(ctx, actor, p, id, in.ExpectedVersion, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"work_item": item}, nil
+			data, err := b.remote(ctx, "work_item_claim", in)
+			return nil, data, err
+		})
+	mcp.AddTool(server, &mcp.Tool{Name: "work_item_release", Description: "Release this task's assignee after scoped authorization; does not stop an Agent."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in WriteArgs) (*mcp.CallToolResult, map[string]any, error) {
+			data, err := b.remote(ctx, "work_item_release", in)
+			return nil, data, err
+		})
+	mcp.AddTool(server, &mcp.Tool{Name: "work_item_reassign", Description: "Transfer a task to an eligible real Principal with CAS; manager recovery is independently authorized."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in ReassignArgs) (*mcp.CallToolResult, map[string]any, error) {
+			data, err := b.remote(ctx, "work_item_reassign", in)
+			return nil, data, err
+		})
+	mcp.AddTool(server, &mcp.Tool{Name: "work_item_review_claim", Description: "Claim the independent reviewer relationship on an in-review WorkItem, subject to persisted executor history and CAS."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in WriteArgs) (*mcp.CallToolResult, map[string]any, error) {
+			data, err := b.remote(ctx, "work_item_review_claim", in)
+			return nil, data, err
+		})
+	mcp.AddTool(server, &mcp.Tool{Name: "work_item_review_release", Description: "Relinquish current independent reviewer assignment without modifying historical role facts."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in WriteArgs) (*mcp.CallToolResult, map[string]any, error) {
+			data, err := b.remote(ctx, "work_item_review_release", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_update", Description: "Update title/description/priority with optimistic version check."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in UpdateArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_update", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, id, err := parseIDs(in.ProjectID, in.ItemID)
-			if err != nil {
-				return nil, nil, err
-			}
-			ch := domain.Changes{Title: in.Title, Description: in.Description}
-			if in.Priority != nil {
-				priority := domain.Priority(*in.Priority)
-				ch.Priority = &priority
-			}
-			item, err := b.Work.Update(ctx, actor, p, id, ch, in.ExpectedVersion, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"work_item": item}, nil
+			data, err := b.remote(ctx, "work_item_update", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_transition", Description: "Apply a legal status transition. Human review is required to complete a task."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in TransitionArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_transition", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, id, err := parseIDs(in.ProjectID, in.ItemID)
-			if err != nil {
-				return nil, nil, err
-			}
-			item, err := b.Work.Transition(ctx, actor, p, id, domain.Status(in.Status), in.ExpectedVersion, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"work_item": item}, nil
+			data, err := b.remote(ctx, "work_item_transition", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_add_comment", Description: "Append a persisted work comment and audit; no Agent execution."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in CommentArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "work_item_add_comment", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, id, err := parseIDs(in.ProjectID, in.ItemID)
-			if err != nil {
-				return nil, nil, err
-			}
-			item, err := b.Work.AddComment(ctx, actor, p, id, in.Body, in.ExpectedVersion, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"work_item": item}, nil
+			data, err := b.remote(ctx, "work_item_add_comment", in)
+			return nil, data, err
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "activity_search", Description: "Read recent project activity records."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ActivityArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				data, err := b.remote(ctx, "activity_search", in)
-				return nil, data, err
-			}
-			actor, err := b.actor(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			p, _, err := parseIDs(in.ProjectID, "")
-			if err != nil {
-				return nil, nil, err
-			}
-			records, err := b.Work.Activity(ctx, actor, p, in.Limit)
-			if err != nil {
-				return nil, nil, userError(err)
-			}
-			return nil, map[string]any{"items": records}, nil
+			data, err := b.remote(ctx, "activity_search", in)
+			return nil, data, err
 		})
 	addGovernanceTools(server, b)
+	addTaskModeGovernanceTools(server, b)
 	addWorkPolicyTools(server, b)
-	if b.APIURL != "" {
-		addTestingTools(server, b)
-		addEvidenceTools(server, b)
-		addAccessTools(server, b)
-		addRoleTools(server, b)
-	}
+	addTestingTools(server, b)
+	addEvidenceTools(server, b)
+	addAccessTools(server, b)
+	addRoleTools(server, b)
 	return server
 }

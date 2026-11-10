@@ -42,6 +42,7 @@ type createTestRunArgs struct {
 	IdempotencyKey string   `json:"idempotency_key"`
 	Name           string   `json:"name"`
 	CaseVersionIDs []string `json:"case_version_ids"`
+	WorkItemID     string   `json:"work_item_id,omitempty"`
 	SourceSystem   string   `json:"source_system,omitempty"`
 	Environment    string   `json:"environment,omitempty"`
 	BuildRef       string   `json:"build_ref,omitempty"`
@@ -70,7 +71,7 @@ func ensureUUID(value, label string) (string, error) {
 	}
 	return id.String(), nil
 }
-func (b Bridge) testRemote(ctx context.Context, tool string, in any) (map[string]any, error) {
+func (b Config) testRemote(ctx context.Context, tool string, in any) (map[string]any, error) {
 	if b.APIURL == "" {
 		return nil, errors.New("TESTING_REST_ADAPTER_REQUIRED")
 	}
@@ -155,10 +156,18 @@ func (b Bridge) testRemote(ctx context.Context, tool string, in any) (map[string
 		if source == "" {
 			source = "external-mcp"
 		}
-		return b.call(ctx, "POST", base+"/test-runs", map[string]any{
+		body := map[string]any{
 			"name": a.Name, "source_system": source, "case_version_ids": versions,
 			"environment": a.Environment, "build_ref": a.BuildRef,
-		}, a.IdempotencyKey, 0)
+		}
+		if a.WorkItemID != "" {
+			wid, err := ensureUUID(a.WorkItemID, "work_item_id")
+			if err != nil {
+				return nil, err
+			}
+			body["work_item_id"] = wid
+		}
+		return b.call(ctx, "POST", base+"/test-runs", body, a.IdempotencyKey, 0)
 	case "test_attempts_search":
 		a := in.(testItemArgs)
 		id, err := ensureUUID(a.ItemID, "item_id")
@@ -203,7 +212,7 @@ func (b Bridge) testRemote(ctx context.Context, tool string, in any) (map[string
 	}
 }
 
-func addTestingTools(server *mcp.Server, b Bridge) {
+func addTestingTools(server *mcp.Server, b Config) {
 	mcp.AddTool(server, &mcp.Tool{Name: "test_case_search", Description: "Read TestCase drafts and published versions in authorized project."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in testProjectArgs) (*mcp.CallToolResult, map[string]any, error) {
 			result, err := b.testRemote(ctx, "test_case_search", in)

@@ -21,7 +21,7 @@ type AccessChangeArgs struct {
 	IdempotencyKey  string `json:"idempotency_key"`
 }
 
-func (b Bridge) accessRemote(ctx context.Context, action string, project, principal string, change *AccessChangeArgs) (map[string]any, error) {
+func (b Config) accessRemote(ctx context.Context, action string, project, principal string, change *AccessChangeArgs) (map[string]any, error) {
 	if b.APIURL == "" {
 		return nil, errors.New("ACCESS_REST_ADAPTER_REQUIRED")
 	}
@@ -53,7 +53,7 @@ func (b Bridge) accessRemote(ctx context.Context, action string, project, princi
 		return nil, errors.New("UNKNOWN_ACCESS_TOOL")
 	}
 }
-func addAccessTools(server *mcp.Server, b Bridge) {
+func addAccessTools(server *mcp.Server, b Config) {
 	mcp.AddTool(server, &mcp.Tool{Name: "project_access_self", Description: "Read this Agent/Human credential's effective Project Scope and role; no token values."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input AccessProjectArgs) (*mcp.CallToolResult, map[string]any, error) {
 			data, err := b.accessRemote(ctx, "access_self", input.ProjectID, "", nil)

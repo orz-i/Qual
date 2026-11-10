@@ -22,7 +22,7 @@ func TestPhase9MCPAndCLIRoleProvenance(t *testing.T) {
 	pid := f.project.String()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	server := mcpserver.New(mcpserver.Bridge{APIURL: f.server.URL, Bearer: f.agent})
+	server := mcpserver.New(mcpserver.Config{APIURL: f.server.URL, Bearer: f.agent})
 	st, ct := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, st, nil)
 	if err != nil {

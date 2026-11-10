@@ -6,8 +6,8 @@ import (
 	"strconv"
 )
 
-// The legacy no-argument tool remains v1; any explicit page selector opts in
-// to the bounded, authorization-filtered REST Context v2 projection.
+// Both omitted and explicit section requests use the same bounded,
+// authorization-filtered REST Context v2. Empty section means overview.
 func contextSectionQuery(section string, limit int, cursor string) (url.Values, error) {
 	if section == "" {
 		section = "overview"

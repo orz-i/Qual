@@ -83,7 +83,7 @@ func TestQual28StdioContextV1V2AndCLIResume(t *testing.T) {
 	ctx := context.Background()
 	call := func(token string, args map[string]any) (*mcp.CallToolResult, error) {
 		t.Helper()
-		server := mcpserver.New(mcpserver.Bridge{APIURL: f.server.URL, Bearer: token})
+		server := mcpserver.New(mcpserver.Config{APIURL: f.server.URL, Bearer: token})
 		st, ct := mcp.NewInMemoryTransports()
 		session, err := server.Connect(ctx, st, nil)
 		if err != nil {
@@ -99,12 +99,17 @@ func TestQual28StdioContextV1V2AndCLIResume(t *testing.T) {
 		return conn.CallTool(ctx, &mcp.CallToolParams{Name: "work_item_get_context", Arguments: args})
 	}
 	args := map[string]any{"project_id": f.project.String(), "item_id": id}
-	legacy, err := call(f.agent, args)
-	if err != nil || legacy.IsError {
-		t.Fatalf("legacy MCP: %v", err)
+	defaultContext, err := call(f.agent, args)
+	if err != nil || defaultContext.IsError {
+		t.Fatalf("default MCP overview: %v", err)
 	}
-	if legacy.StructuredContent.(map[string]any)["schema_version"] != float64(1) {
-		t.Fatalf("legacy MCP changed format: %+v", legacy.StructuredContent)
+	defaultFacts := defaultContext.StructuredContent.(map[string]any)
+	if defaultFacts["schema_version"] != float64(2) || defaultFacts["section"] != "overview" ||
+		defaultFacts["context_revision"] != float64(2) {
+		t.Fatalf("default MCP must use bounded authoritative Context v2: %+v", defaultFacts)
+	}
+	if _, retained := defaultFacts["recent_comments"]; retained {
+		t.Fatal("obsolete MCP v1 multi-request synthesis still active")
 	}
 	args["section"] = "attempts"
 	args["limit"] = 2
