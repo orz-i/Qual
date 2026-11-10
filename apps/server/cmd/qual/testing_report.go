@@ -136,12 +136,22 @@ func runTestReport(ctx context.Context, c *client, in testReportInput) error {
 			return err
 		}
 	}
-	rawRun, _, err := c.do(ctx, "POST", base+"/test-runs", map[string]any{
+	runBody := map[string]any{
 		"name": in.Title, "source_system": in.Source,
 		"environment": in.Environment, "build_ref": in.BuildRef,
 		"case_version_ids": []string{caseVersionID.String()},
-	}, 0, reportStepKey(in.RequestKey, "run"))
+	}
+	if in.WorkItemID != "" {
+		// Goose20 requires this immutable WorkItem binding. Existing Case
+		// coverage must already be confirmed before a bound Run can be saved;
+		// do not silently create a project-wide unbound Run on 403.
+		runBody["work_item_id"] = workItemID
+	}
+	rawRun, _, err := c.do(ctx, "POST", base+"/test-runs", runBody, 0, reportStepKey(in.RequestKey, "run"))
 	if err != nil {
+		if in.WorkItemID != "" {
+			return fmt.Errorf("test report run creation failed (no attempt submitted): ensure the published Case is already bound as WorkItem coverage, and use Goose20; %w", err)
+		}
 		return fmt.Errorf("test report run creation failed (no attempt submitted): %w", err)
 	}
 	var run struct {

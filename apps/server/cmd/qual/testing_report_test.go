@@ -75,6 +75,7 @@ func (h *reportHarness) handle(w http.ResponseWriter, r *http.Request) {
 			Name           string      `json:"name"`
 			SourceSystem   string      `json:"source_system"`
 			CaseVersionIDs []uuid.UUID `json:"case_version_ids"`
+			WorkItemID     *uuid.UUID  `json:"work_item_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			panic(err)
@@ -82,6 +83,9 @@ func (h *reportHarness) handle(w http.ResponseWriter, r *http.Request) {
 		if body.Name != "actual external checks" || body.SourceSystem != "external-cli" ||
 			len(body.CaseVersionIDs) != 1 || body.CaseVersionIDs[0] != h.version {
 			panic("run request changed source or immutable case version")
+		}
+		if body.WorkItemID != nil && *body.WorkItemID != h.workItem {
+			panic("run was bound to an unrelated WorkItem")
 		}
 		h.runKeys = append(h.runKeys, r.Header.Get("Idempotency-Key"))
 		w.WriteHeader(http.StatusCreated)

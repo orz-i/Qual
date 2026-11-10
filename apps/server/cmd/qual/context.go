@@ -44,6 +44,12 @@ func runResume(ctx context.Context, c *client, path string, limit int) error {
 	}
 	overviewPath, _ := contextPath(path, "overview", limit, "")
 	raw, status, err := c.do(ctx, "GET", overviewPath, nil, 0, "")
+	// An unclaimed Candidate may read the ordinary Task contract (work:read),
+	// but is NOT allowed into private WorkContext. Fall back to exactly that
+	// separately authorized public WorkItem; do not query any private sections.
+	if status == 403 {
+		return runBasicTaskResume(ctx, c, path)
+	}
 	if err != nil {
 		return &exitError{code: 3, cause: fmt.Errorf("resume overview: %w", err)}
 	}
@@ -53,9 +59,11 @@ func runResume(ctx context.Context, c *client, path string, limit int) error {
 	var overview struct {
 		SchemaVersion   int             `json:"schema_version"`
 		ContextRevision int64           `json:"context_revision"`
+		GeneratedAt     json.RawMessage `json:"generated_at"`
 		WorkItem        json.RawMessage `json:"work_item"`
 		LatestReview    json.RawMessage `json:"latest_review"`
 		Acceptance      json.RawMessage `json:"acceptance"`
+		Capabilities    json.RawMessage `json:"capabilities"`
 	}
 	if err := json.Unmarshal(raw, &overview); err != nil {
 		return errors.New("invalid WorkContext overview")
@@ -63,9 +71,28 @@ func runResume(ctx context.Context, c *client, path string, limit int) error {
 	if overview.SchemaVersion != 2 || overview.ContextRevision < 1 {
 		return errors.New("unsupported WorkContext version")
 	}
+	// Older, still deployed v2 servers project only a short Summary. Obtain
+	// the missing Task-native description/acceptance from the already protected
+	// WorkItem GET and ensure it has the SAME version. No private data is read
+	// through this compatibility path, and no second Task fact store exists.
+	var summary map[string]json.RawMessage
+	if json.Unmarshal(overview.WorkItem, &summary) != nil || summary == nil {
+		return errors.New("invalid WorkContext WorkItem summary")
+	}
+	_, hasDescription := summary["description"]
+	_, hasCriteria := summary["acceptance_criteria"]
+	if !hasDescription || !hasCriteria {
+		if err := hydrateResumeTask(ctx, c, path, overview.ContextRevision, summary); err != nil {
+			return err
+		}
+		overview.WorkItem, err = json.Marshal(summary)
+		if err != nil {
+			return err
+		}
+	}
 	sections := map[string]any{}
 	omitted := map[string]string{}
-	for _, section := range []string{"dependencies", "reviews", "coverage", "attempts", "artifacts", "references"} {
+	for _, section := range []string{"dependencies", "comments", "reviews", "coverage", "attempts", "artifacts", "references"} {
 		q, _ := contextPath(path, section, limit, "")
 		b, code, err := c.do(ctx, "GET", q, nil, 0, "")
 		if code == 403 {
@@ -108,9 +135,11 @@ func runResume(ctx context.Context, c *client, path string, limit int) error {
 	}
 	out := map[string]any{
 		"schema_version": 2, "context_revision": overview.ContextRevision,
-		"consistency": "best_effort", "work_item": overview.WorkItem,
+		"generated_at": overview.GeneratedAt,
+		"consistency":  "best_effort", "work_item": overview.WorkItem,
 		"latest_review": overview.LatestReview, "acceptance": overview.Acceptance,
-		"sections": sections, "omitted_sections": omitted,
+		"capabilities": overview.Capabilities,
+		"sections":     sections, "omitted_sections": omitted,
 		"warnings": []string{"Read fresh WorkItem/version and permissions before any write.",
 			"Only persisted source facts are shown; review needs_work/failed histories and explicit Done Gate.",
 			"No cross-domain snapshot guarantee; use section cursors for more records.",
