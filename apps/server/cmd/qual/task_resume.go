@@ -65,7 +65,7 @@ func runBasicTaskResume(ctx context.Context, c *client, path string) error {
 	var capabilities json.RawMessage
 	omitted := map[string]string{}
 	for _, section := range []string{"overview", "dependencies", "comments", "reviews", "acceptance", "coverage",
-		"attempts", "artifacts", "references", "threads"} {
+		"attempts", "historical_attributions", "artifacts", "references", "threads"} {
 		omitted[section] = "not_authorized"
 	}
 	capsRaw, status, err := c.do(ctx, "GET", path+"/capabilities", nil, 0, "")

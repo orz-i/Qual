@@ -12,7 +12,7 @@ import (
 var allowedContextSections = map[string]bool{
 	"overview": true, "dependencies": true, "comments": true,
 	"reviews": true, "acceptance": true, "coverage": true,
-	"attempts": true, "artifacts": true, "references": true,
+	"attempts": true, "historical_attributions": true, "artifacts": true, "references": true,
 }
 
 func contextPath(path, section string, limit int, cursor string) (string, error) {
@@ -57,13 +57,14 @@ func runResume(ctx context.Context, c *client, path string, limit int) error {
 		return errors.New("resume overview was not authorized")
 	}
 	var overview struct {
-		SchemaVersion   int             `json:"schema_version"`
-		ContextRevision int64           `json:"context_revision"`
-		GeneratedAt     json.RawMessage `json:"generated_at"`
-		WorkItem        json.RawMessage `json:"work_item"`
-		LatestReview    json.RawMessage `json:"latest_review"`
-		Acceptance      json.RawMessage `json:"acceptance"`
-		Capabilities    json.RawMessage `json:"capabilities"`
+		SchemaVersion     int             `json:"schema_version"`
+		ContextRevision   int64           `json:"context_revision"`
+		GeneratedAt       json.RawMessage `json:"generated_at"`
+		WorkItem          json.RawMessage `json:"work_item"`
+		LatestReview      json.RawMessage `json:"latest_review"`
+		Acceptance        json.RawMessage `json:"acceptance"`
+		Capabilities      json.RawMessage `json:"capabilities"`
+		AvailableSections []string        `json:"available_sections"`
 	}
 	if err := json.Unmarshal(raw, &overview); err != nil {
 		return errors.New("invalid WorkContext overview")
@@ -92,7 +93,16 @@ func runResume(ctx context.Context, c *client, path string, limit int) error {
 	}
 	sections := map[string]any{}
 	omitted := map[string]string{}
-	for _, section := range []string{"dependencies", "comments", "reviews", "coverage", "attempts", "artifacts", "references"} {
+	// Only a server advertising the Goose21 provenance section is queried;
+	// preserve read-only resume on older Context v2 installations.
+	sectionNames := []string{"dependencies", "comments", "reviews", "coverage", "attempts", "artifacts", "references"}
+	for _, offered := range overview.AvailableSections {
+		if offered == "historical_attributions" {
+			sectionNames = append(sectionNames, offered)
+			break
+		}
+	}
+	for _, section := range sectionNames {
 		q, _ := contextPath(path, section, limit, "")
 		b, code, err := c.do(ctx, "GET", q, nil, 0, "")
 		if code == 403 {
