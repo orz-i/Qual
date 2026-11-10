@@ -165,8 +165,12 @@ func TestQual59LegacyCapabilitiesAreOptionalAndNonEscalating(t *testing.T) {
 	}
 	if code, ctx, _ := request(t, "GET", path+"/context?section=overview", f.agent, "", "", nil); code != 200 {
 		t.Fatalf("legacy WorkContext failed HTTP%d %v", code, ctx)
-	} else if caps, ok := ctx["capabilities"].(map[string]any); !ok || caps["project_mode"] != "legacy" {
-		t.Fatalf("legacy WorkContext capability enrichment missing: %v", ctx)
+	} else if caps, exposed := ctx["capabilities"]; exposed && caps != nil {
+		// Goose17 Legacy Context is a bounded source-history view, not a
+		// second TaskPolicy provider. Its capability hint is optional, and
+		// on the old schema no TaskScoped policy is configured. The separate
+		// GET /capabilities above is the actual Legacy-compatible projection.
+		t.Fatalf("legacy WorkContext unexpectedly exposed scoped capabilities: %v", ctx)
 	}
 	if code, cap, _ := request(t, "GET",
 		f.url(f.otherProject)+"/"+x["id"].(string)+"/capabilities", f.agent, "", "", nil); code != 404 {
