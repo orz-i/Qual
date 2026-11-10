@@ -136,18 +136,40 @@ func runTestReport(ctx context.Context, c *client, in testReportInput) error {
 			return err
 		}
 	}
-	rawRun, _, err := c.do(ctx, "POST", base+"/test-runs", map[string]any{
+	runBody := map[string]any{
 		"name": in.Title, "source_system": in.Source,
 		"environment": in.Environment, "build_ref": in.BuildRef,
 		"case_version_ids": []string{caseVersionID.String()},
-	}, 0, reportStepKey(in.RequestKey, "run"))
+	}
+	if in.WorkItemID != "" {
+		// Goose20 requires this immutable WorkItem binding. Existing Case
+		// coverage must already be confirmed before a bound Run can be saved;
+		// do not silently create a project-wide unbound Run on 403.
+		runBody["work_item_id"] = workItemID
+	}
+	rawRun, status, err := c.do(ctx, "POST", base+"/test-runs", runBody, 0, reportStepKey(in.RequestKey, "run"))
+	legacyCoverageOnly := false
+	if in.WorkItemID != "" && status == 422 && err != nil && strings.HasPrefix(err.Error(), "RUN_BINDING_UNAVAILABLE: ") {
+		// The older Goose17 schema has no work_item_id column. The server has
+		// explicitly rejected this uncommitted bound request: do not silently
+		// downgrade on arbitrary 422, permission error or broken coverage.
+		// Preserve the old public CLI contract via separate legacy coverage.
+		// Use a stable, separate idempotency key for the different payload.
+		delete(runBody, "work_item_id")
+		rawRun, _, err = c.do(ctx, "POST", base+"/test-runs", runBody, 0, reportStepKey(in.RequestKey, "run-legacy-unbound"))
+		legacyCoverageOnly = true
+	}
 	if err != nil {
+		if in.WorkItemID != "" {
+			return fmt.Errorf("test report run creation failed (no attempt submitted): ensure the published Case is already bound as WorkItem coverage, and use Goose20; %w", err)
+		}
 		return fmt.Errorf("test report run creation failed (no attempt submitted): %w", err)
 	}
 	var run struct {
-		ID        uuid.UUID `json:"id"`
-		ProjectID uuid.UUID `json:"project_id"`
-		Items     []struct {
+		ID         uuid.UUID  `json:"id"`
+		ProjectID  uuid.UUID  `json:"project_id"`
+		WorkItemID *uuid.UUID `json:"work_item_id"`
+		Items      []struct {
 			ID            uuid.UUID `json:"id"`
 			TestCaseID    uuid.UUID `json:"test_case_id"`
 			CaseVersionID uuid.UUID `json:"case_version_id"`
@@ -157,6 +179,14 @@ func runTestReport(ctx context.Context, c *client, in testReportInput) error {
 		run.ProjectID != pid || len(run.Items) != 1 ||
 		run.Items[0].ID == uuid.Nil || run.Items[0].TestCaseID == uuid.Nil || run.Items[0].CaseVersionID != caseVersionID {
 		return errors.New("test report run response had unexpected project/case identity; attempt NOT submitted")
+	}
+	if in.WorkItemID != "" {
+		if legacyCoverageOnly && run.WorkItemID != nil {
+			return errors.New("legacy TestRun unexpectedly reported an immutable binding; refusing to continue")
+		}
+		if !legacyCoverageOnly && (run.WorkItemID == nil || *run.WorkItemID != workItemID) {
+			return errors.New("server did not confirm requested TestRun task binding; attempt NOT submitted")
+		}
 	}
 	itemID := run.Items[0].ID
 	rawAttempt, _, err := c.do(ctx, "POST", base+"/test-run-items/"+itemID.String()+"/attempts", map[string]any{
@@ -206,6 +236,11 @@ func runTestReport(ctx context.Context, c *client, in testReportInput) error {
 	if in.WorkItemID != "" {
 		receipt["work_item_id"] = workItemID
 		receipt["coverage_linked"] = true
+		if legacyCoverageOnly {
+			receipt["run_binding"] = "legacy_coverage_only"
+		} else {
+			receipt["run_binding"] = "immutable_work_item"
+		}
 	}
 	return json.NewEncoder(os.Stdout).Encode(receipt)
 }

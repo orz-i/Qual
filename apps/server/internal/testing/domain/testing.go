@@ -14,13 +14,16 @@ import (
 )
 
 var (
-	ErrValidation       = errors.New("invalid test data")
-	ErrConflict         = errors.New("test revision conflict")
-	ErrNotPublished     = errors.New("test case has no published version")
-	ErrAlreadyPublished = errors.New("draft revision already published")
-	ErrNotFailed        = errors.New("bug can only link to a failed attempt")
-	ErrDuplicate        = errors.New("duplicate test record")
-	ErrNotFound         = errors.New("test resource not found")
+	ErrValidation = errors.New("invalid test data")
+	// A precise compatibility error: Goose17 has no immutable Run binding.
+	// Do not use the generic 422 code to trigger an unbound fallback.
+	ErrRunBindingUnavailable = errors.New("immutable TestRun task binding unavailable in this schema")
+	ErrConflict              = errors.New("test revision conflict")
+	ErrNotPublished          = errors.New("test case has no published version")
+	ErrAlreadyPublished      = errors.New("draft revision already published")
+	ErrNotFailed             = errors.New("bug can only link to a failed attempt")
+	ErrDuplicate             = errors.New("duplicate test record")
+	ErrNotFound              = errors.New("test resource not found")
 )
 
 type Step struct {

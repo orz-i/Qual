@@ -159,7 +159,7 @@ func (e *exitError) Unwrap() error { return e.cause }
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: qual projects|items|reviews|show|context|resume|create|update|claim|transition|comment|activity|acceptance|complete|review-policy|review-policy-set|work-review-policy|work-review-policy-set|test|evidence|archive|webhook|access|role [flags]")
+		return errors.New("usage: qual projects|items|reviews|task-auth-policy|task-auth-preview|task-auth-set|show|capabilities|context|resume|create|update|claim|release|reassign|review-claim|review-release|transition|comment|activity|acceptance|complete|review-policy|review-policy-set|work-review-policy|work-review-policy-set|test|evidence|archive|webhook|access|role [flags]")
 	}
 	c, err := newClient()
 	if err != nil {
@@ -186,6 +186,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	projectFlag := fs.String("project", "", "project UUID or project key")
 	itemFlag := fs.String("item", "", "work item UUID")
+	newAssigneeFlag := fs.String("new-assignee", "", "eligible receiving Principal UUID for reassign")
 	kind := fs.String("kind", "task", "task|bug")
 	title := fs.String("title", "", "work item title")
 	description := fs.String("description", "", "description")
@@ -201,6 +202,7 @@ func run(args []string) error {
 	mode := fs.String("mode", "", "independent_review|owner_acceptance")
 	policyVersion := fs.Int64("policy-version", -1, "expected project review policy version (0 for default)")
 	allowOwner := fs.Bool("allow-owner", false, "allow explicit Owner acceptance")
+	ackLegacy := fs.Bool("acknowledge-legacy-widening", false, "explicitly accept that rollback to legacy can restore broad project-scoped write permissions")
 	forceIndependent := fs.Bool("force-independent", true, "force independent review for high-risk work")
 	reason := fs.String("reason", "", "explicit risk acceptance or policy-change reason")
 	acknowledge := fs.Bool("acknowledge-self-review", false, "explicitly acknowledge non-independent Owner acceptance")
@@ -219,6 +221,33 @@ func run(args []string) error {
 		return err
 	}
 	path := "/api/v1/projects/" + url.PathEscape(projectID)
+	if args[0] == "task-auth-policy" {
+		data, code, err := c.do(ctx, "GET", path+"/task-authorization-policy", nil, 0, "")
+		return output(data, code, err)
+	}
+	if args[0] == "task-auth-preview" {
+		if *mode != "legacy" && *mode != "task_scoped" {
+			return errors.New("task-auth-preview requires -mode legacy|task_scoped")
+		}
+		query := url.Values{"mode": {*mode}}
+		data, code, err := c.do(ctx, "GET", path+"/task-authorization-policy/preview?"+query.Encode(), nil, 0, "")
+		return output(data, code, err)
+	}
+	if args[0] == "task-auth-set" {
+		if *mode != "legacy" && *mode != "task_scoped" {
+			return errors.New("task-auth-set requires -mode legacy|task_scoped")
+		}
+		if *policyVersion < 0 || len([]rune(*reason)) < 16 ||
+			(*mode == "legacy" && !*ackLegacy) {
+			return errors.New("task-auth-set requires -policy-version (0 when default), -reason >=16 chars; rollback needs -acknowledge-legacy-widening")
+		}
+		body := map[string]any{
+			"mode": *mode, "expected_version": *policyVersion, "reason": *reason,
+			"acknowledge_legacy_widening": *ackLegacy,
+		}
+		data, code, err := c.do(ctx, "PUT", path+"/task-authorization-policy", body, 0, chooseKey(*requestKey))
+		return output(data, code, err)
+	}
 	if args[0] == "review-policy" {
 		data, code, err := c.do(ctx, "GET", path+"/review-policy", nil, 0, "")
 		return output(data, code, err)
@@ -274,14 +303,19 @@ func run(args []string) error {
 		return output(data, code, err)
 	}
 	if *itemFlag == "" {
-		return errors.New("-item UUID required")
+		return errors.New("-item UUID or project display key required")
 	}
-	if _, err := uuid.Parse(*itemFlag); err != nil {
-		return errors.New("invalid -item UUID; project display keys will be supported later")
+	resolvedItemID, err := resolveTaskID(ctx, c, projectID, *itemFlag)
+	if err != nil {
+		return err
 	}
-	path += "/work-items/" + url.PathEscape(*itemFlag)
+	path += "/work-items/" + url.PathEscape(resolvedItemID)
 	if args[0] == "show" {
 		data, code, err := c.do(ctx, "GET", path, nil, 0, "")
+		return output(data, code, err)
+	}
+	if args[0] == "capabilities" {
+		data, code, err := c.do(ctx, "GET", path+"/capabilities", nil, 0, "")
 		return output(data, code, err)
 	}
 	if args[0] == "context" {
@@ -337,6 +371,22 @@ func run(args []string) error {
 		return output(data, code, err)
 	case "claim":
 		data, code, err := c.do(ctx, "POST", path+"/claim", map[string]any{"expected_version": *version}, 0, key)
+		return output(data, code, err)
+	case "release":
+		data, code, err := c.do(ctx, "POST", path+"/release", map[string]any{"expected_version": *version}, 0, key)
+		return output(data, code, err)
+	case "review-claim":
+		data, code, err := c.do(ctx, "POST", path+"/review-claim", map[string]any{"expected_version": *version}, 0, key)
+		return output(data, code, err)
+	case "review-release":
+		data, code, err := c.do(ctx, "POST", path+"/review-release", map[string]any{"expected_version": *version}, 0, key)
+		return output(data, code, err)
+	case "reassign":
+		id, err := uuid.Parse(*newAssigneeFlag)
+		if err != nil || id == uuid.Nil {
+			return errors.New("reassign requires -new-assignee with a valid Principal UUID")
+		}
+		data, code, err := c.do(ctx, "POST", path+"/reassign", map[string]any{"new_assignee_id": id.String(), "expected_version": *version}, 0, key)
 		return output(data, code, err)
 	case "transition":
 		if *statusFlag == "" {

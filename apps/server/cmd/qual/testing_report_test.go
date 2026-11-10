@@ -30,6 +30,9 @@ type reportHarness struct {
 	workItemMissing bool
 	coverageFail    bool
 	covered         bool
+	legacyBinding   bool
+	genericRejected bool
+	unauthorized    bool
 }
 
 func (h *reportHarness) handle(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +78,7 @@ func (h *reportHarness) handle(w http.ResponseWriter, r *http.Request) {
 			Name           string      `json:"name"`
 			SourceSystem   string      `json:"source_system"`
 			CaseVersionIDs []uuid.UUID `json:"case_version_ids"`
+			WorkItemID     *uuid.UUID  `json:"work_item_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			panic(err)
@@ -83,14 +87,32 @@ func (h *reportHarness) handle(w http.ResponseWriter, r *http.Request) {
 			len(body.CaseVersionIDs) != 1 || body.CaseVersionIDs[0] != h.version {
 			panic("run request changed source or immutable case version")
 		}
+		if body.WorkItemID != nil && *body.WorkItemID != h.workItem {
+			panic("run was bound to an unrelated WorkItem")
+		}
 		h.runKeys = append(h.runKeys, r.Header.Get("Idempotency-Key"))
+		if body.WorkItemID != nil && (h.legacyBinding || h.genericRejected || h.unauthorized) {
+			code := "RUN_BINDING_UNAVAILABLE"
+			status := http.StatusUnprocessableEntity
+			if h.genericRejected {
+				code = "VALIDATION_ERROR"
+			}
+			if h.unauthorized {
+				code, status = "PERMISSION_DENIED", http.StatusForbidden
+			}
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"error":{"code":%q,"message":"synthetic deny"}}`, code)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		project := h.project
 		if h.badRun {
 			project = uuid.New()
 		}
-		fmt.Fprintf(w, `{"id":%q,"project_id":%q,"items":[{"id":%q,"test_case_id":%q,"case_version_id":%q}]}`,
-			h.run, project, h.item, h.testCase, h.version)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": h.run, "project_id": project, "work_item_id": body.WorkItemID,
+			"items": []map[string]any{{"id": h.item, "test_case_id": h.testCase, "case_version_id": h.version}},
+		})
 	case attemptPath:
 		var body struct {
 			Status     string `json:"status"`
@@ -312,5 +334,49 @@ func TestTestReportRejectsInvalidDataBeforeAnyWrite(t *testing.T) {
 	}
 	if h.posts != 0 || h.gets != 0 {
 		t.Fatalf("invalid reports caused backend requests: posts=%d gets=%d", h.posts, h.gets)
+	}
+}
+
+// Goose17 has no bound Run column. The backend returns a distinct 422 code,
+// so the CLI can preserve old coverage-only behavior without falling back
+// on authorization failures or other validation errors.
+func TestReportLegacyCompatibilityRequiresPreciseSchemaSignal(t *testing.T) {
+	h := newReportHarness()
+	h.legacyBinding = true
+	c := newReportClient(t, &h)
+	args := reportArgs(h)
+	args.WorkItemID = h.workItem.String()
+	if err := runTestReport(context.Background(), c, args); err != nil {
+		t.Fatalf("known legacy-only schema denied safe coverage-only report: %v", err)
+	}
+	if !h.covered || len(h.runKeys) != 2 || h.runKeys[0] == h.runKeys[1] || h.posts != 4 {
+		t.Fatalf("did not use distinct bound/legacy keys or preserve coverage: %+v", h)
+	}
+	if err := runTestReport(context.Background(), c, args); err != nil {
+		t.Fatalf("same input/key replay lost legacy compatibility: %v", err)
+	}
+	if len(h.runKeys) != 4 || h.runKeys[0] != h.runKeys[2] || h.runKeys[1] != h.runKeys[3] {
+		t.Fatalf("non-stable retry keys after legacy response: %v", h.runKeys)
+	}
+}
+
+func TestReportNeverDowngradesOnGenericValidationOrForbidden(t *testing.T) {
+	for _, rejected := range []struct {
+		name               string
+		generic, forbidden bool
+	}{
+		{name: "generic 422", generic: true}, {name: "forbidden 403", forbidden: true},
+	} {
+		t.Run(rejected.name, func(t *testing.T) {
+			h := newReportHarness()
+			h.genericRejected, h.unauthorized = rejected.generic, rejected.forbidden
+			c := newReportClient(t, &h)
+			args := reportArgs(h)
+			args.WorkItemID = h.workItem.String()
+			err := runTestReport(context.Background(), c, args)
+			if err == nil || len(h.runKeys) != 1 || h.covered || len(h.attemptKeys) != 0 || h.posts != 1 {
+				t.Fatalf("validation/permission denial caused unsafe fallback: %v %+v", err, h)
+			}
+		})
 	}
 }

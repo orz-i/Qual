@@ -116,10 +116,18 @@ func runTesting(ctx context.Context, c *client, args []string) error {
 			}
 			ids = append(ids, id)
 		}
-		return do("POST", "/test-runs", map[string]any{
+		body := map[string]any{
 			"name": strings.TrimSpace(*title), "source_system": *source, "environment": *environment, "build_ref": *buildRef,
 			"case_version_ids": ids,
-		}, 0)
+		}
+		if *workItem != "" {
+			wid, err := validUUID(*workItem, "work-item")
+			if err != nil {
+				return err
+			}
+			body["work_item_id"] = wid
+		}
+		return do("POST", "/test-runs", body, 0)
 	case "attempts", "record":
 		id, err := validUUID(*itemID, "item")
 		if err != nil {
