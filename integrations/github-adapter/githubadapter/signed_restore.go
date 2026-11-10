@@ -183,7 +183,7 @@ func RestoreSignedBackup(archive, destination string, key []byte) (*Spool, Signe
 	// Opening the staged queue validates its durable quarantine marker,
 	// immutable receipts, archived SHA indexes and crash recovery windows.
 	// This implementation intentionally has NO local "approve" unlock.
-	if _, err := OpenSpool(stage); err != nil {
+	if _, err := OpenExistingSpool(stage); err != nil {
 		return nil, zero, err
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
@@ -199,7 +199,7 @@ func RestoreSignedBackup(archive, destination string, key []byte) (*Spool, Signe
 	if err := syncDirectory(parent); err != nil {
 		return nil, zero, err
 	}
-	reopened, err := OpenSpool(destination)
+	reopened, err := OpenExistingSpool(destination)
 	if err != nil {
 		return nil, zero, err
 	}

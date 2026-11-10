@@ -37,6 +37,9 @@ func TestRestoredQuarantineBlocksIngressAndQualWriterAcrossRestart(t *testing.T)
 		if err != nil || !state.Quarantined || !state.RequiresSourceReconciliation || state.SnapshotSHA256 != sha {
 			t.Fatalf("restored backup not quarantined: %+v %v", state, err)
 		}
+		if err := s.IngressReadiness(); !errors.Is(err, ErrRestoredQuarantine) {
+			t.Fatalf("restored signed snapshot was reported ready for new deliveries: %v", err)
+		}
 		if _, err := NewHandler(fixtureRepo, []byte(strings.Repeat("w", 40)), s); !errors.Is(err, ErrRestoredQuarantine) {
 			t.Fatalf("restored spool can start HTTP listener: %v", err)
 		}

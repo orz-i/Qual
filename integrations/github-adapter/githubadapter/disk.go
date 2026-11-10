@@ -55,6 +55,25 @@ func (s *Spool) disk() (filesystemStats, error) {
 	return stats, nil
 }
 
+// IngressReadiness is a read-only, best-effort readiness probe for *new*
+// signed deliveries. Unlike /healthz, it also checks the live active-origin
+// witnesses, recovery quarantine, real disk reserve and hot queue limits.
+// An identical already-durable delivery may still be acknowledged while
+// intake is blocked; readiness is not a substitute for Enqueue's locked gate.
+func (s *Spool) IngressReadiness() error {
+	if err := s.requireActive(); err != nil {
+		return err
+	}
+	capacity, err := s.Capacity()
+	if err != nil {
+		return err
+	}
+	if capacity.IngressBlocked {
+		return ErrFull
+	}
+	return nil
+}
+
 func (s *Spool) diskPreflight() error {
 	disk, err := s.disk()
 	if err != nil {
