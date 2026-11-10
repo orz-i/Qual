@@ -26,24 +26,29 @@ type Spool struct {
 	probeDisk func(string) (filesystemStats, error)
 }
 
-func safeDir(path string) error {
+// Existing histories are never repaired by creating absent directories.
+// In particular, a missing Archived AND archive-index pair might have held
+// replay tombstones that cannot be reconstructed from local bytes.
+func safeExistingDir(path string) error {
 	fi, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(path, 0700); err != nil {
-			return err
-		}
-		fi, err = os.Lstat(path)
-	}
-	if err != nil {
-		return err
-	}
-	if !fi.IsDir() || fi.Mode().Perm() != 0700 || fi.Mode()&os.ModeSymlink != 0 {
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0700 || fi.Mode()&os.ModeSymlink != 0 {
 		return ErrSpool
 	}
-	if s, ok := fi.Sys().(*syscall.Stat_t); ok && int(s.Uid) != os.Getuid() {
+	if s, ok := fi.Sys().(*syscall.Stat_t); !ok || int(s.Uid) != os.Getuid() {
 		return ErrSpool
 	}
 	return nil
+}
+
+func safeDir(path string) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(path, 0700); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	return safeExistingDir(path)
 }
 
 func safeParent(path string) error {
@@ -58,7 +63,46 @@ func safeParent(path string) error {
 	return nil
 }
 
-func OpenSpool(root string) (*Spool, error) {
+// OpenSpool keeps the library's explicit fresh-test convenience. Shipping
+// CLI startup/inspect uses OpenExistingSpool, never this auto-init path.
+func OpenSpool(root string) (*Spool, error) { return openSpool(root, true) }
+
+// OpenExistingSpool refuses a missing root or missing history directories.
+// A wrong path, lost volume or discarded archive must never silently mint a
+// fresh source that accepts old signed payloads under a different DeliveryID.
+func OpenExistingSpool(root string) (*Spool, error) { return openSpool(root, false) }
+
+// InitNewSpool is an explicit Operator-only *new source* operation, not a
+// recovery or restoration of previously accepted external event histories.
+// Mkdir is atomic no-replace: an existing root can never be initialized again.
+func InitNewSpool(root string) (*Spool, error) {
+	if root == "" || !filepath.IsAbs(root) {
+		return nil, ErrSpool
+	}
+	if err := safeParent(filepath.Dir(root)); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(root, 0700); err != nil {
+		return nil, ErrSpool
+	}
+	if err := createFreshOrigin(root); err != nil {
+		return nil, err
+	}
+	for _, sub := range snapshotDirectories {
+		if err := safeDir(filepath.Join(root, sub)); err != nil {
+			return nil, err
+		}
+	}
+	if err := syncDirectory(root); err != nil {
+		return nil, err
+	}
+	if err := syncDirectory(filepath.Dir(root)); err != nil {
+		return nil, err
+	}
+	return OpenExistingSpool(root)
+}
+
+func openSpool(root string, allowFresh bool) (*Spool, error) {
 	if root == "" || !filepath.IsAbs(root) {
 		return nil, ErrSpool
 	}
@@ -77,16 +121,26 @@ func OpenSpool(root string) (*Spool, error) {
 	if statErr != nil && !fresh {
 		return nil, statErr
 	}
-	if err := safeDir(root); err != nil {
-		return nil, err
+	if fresh && !allowFresh {
+		return nil, ErrSpool
 	}
 	if fresh {
+		if err := safeDir(root); err != nil {
+			return nil, err
+		}
 		if err := createFreshOrigin(root); err != nil {
 			return nil, err
 		}
+	} else if err := safeExistingDir(root); err != nil {
+		return nil, err
 	}
-	for _, sub := range []string{"pending", "delivered", "archived", "archive-index"} {
-		if err := safeDir(filepath.Join(root, sub)); err != nil {
+	for _, sub := range snapshotDirectories {
+		path := filepath.Join(root, sub)
+		if fresh {
+			if err := safeDir(path); err != nil {
+				return nil, err
+			}
+		} else if err := safeExistingDir(path); err != nil {
 			return nil, err
 		}
 	}

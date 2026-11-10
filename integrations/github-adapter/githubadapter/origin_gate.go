@@ -93,6 +93,14 @@ func (s *Spool) verifiedActiveOrigin() error {
 	if err := requireFreshOrigin(s.Root); err != nil {
 		return err
 	}
+	// Recheck the complete archive layout on every mutable operation, not
+	// only process startup. Removing archived/ plus archive-index/ while a
+	// listener is active must never allow an old signed Body to be requeued.
+	for _, sub := range snapshotDirectories {
+		if err := safeExistingDir(filepath.Join(s.Root, sub)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
