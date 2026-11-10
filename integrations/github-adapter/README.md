@@ -36,8 +36,13 @@ export QUAL_GITHUB_MAPPING_FILE=/private/owner-only/approved-links.json
 export QUAL_API_URL=http://127.0.0.1:18080
 # 由可信 Operator 安全注入独立的 QUAL_GITHUB_WEBHOOK_SECRET；
 # 显式向 Qual 上报时另外注入仅含 event:write 的 QUAL_ADAPTER_TOKEN。
+# 仅对确实从未接受过 GitHub Delivery 的全新来源初始化一次；
+# 丢失旧 Spool、换机器或恢复签名快照，不能用 init 清空历史重放墓碑！
+qual-github-adapter init --approve
 qual-github-adapter inspect
 qual-github-adapter serve
+# GET http://127.0.0.1:18717/healthz 只表示进程存活；
+# GET http://127.0.0.1:18717/readyz 才检查磁盘预留/队列上限/来源完整性。
 # 验签与落盘由 serve 完成；只有经过权限和映射独立配置后：
 qual-github-adapter once
 # Only after reviewing and resolving the incident:
@@ -102,7 +107,7 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 ## QUAL-50 受控本机磁盘与离线签名恢复（叠加变更）
 
 - 新增磁盘可用空间水位/总容量可见性：低于 64 MiB 可用空间时新的 Spool 写入 fail closed 503；物理磁盘使用 >=80% 或可用空间 <=256 MiB 时 inspect 的 disk_near_limit 为真。不可对旧有效重放虚构新条目或丢失既有 Ready Event。
-- 增加显式本机 Operator backup --out <fresh-absolute.zip> --approve 和 restore --file <signed.zip> --into <new-directory> --approve；只使用由可信 Operator **独立安全注入**的 QUAL_GITHUB_BACKUP_HMAC_KEY，不得复用 GitHub Webhook/Qual PI/Human/Operator PostgreSQL HMAC Key。签名为 HMAC-SHA256 完整性，**不加密**备份。恢复只到不存在的新目录，不自动替换正式 Adapter、授权或启动外部 PI。
+- 增加显式本机 Operator backup --out <fresh-absolute.zip> --approve 和 restore --file <signed.zip> --into <new-directory> --approve；可使用 backup --out <private.zip> --approve --require-separate-volume **强制拒绝同文件系统卷备份**。只使用由可信 Operator **独立安全注入**的 QUAL_GITHUB_BACKUP_HMAC_KEY，不得复用 GitHub Webhook/Qual PI/Human/Operator PostgreSQL HMAC Key。HMAC 只证明字节完整性，**不加密、不证明异地**；备份回执单独输出 separate_volume_verified、off_host_verified=false、encrypted=false。恢复仅到不存在的新目录，不自动替换正式 Adapter、授权或启动外部 PI。
 - 只备份已脱敏的 Pending/Delivered/Archived/ArchiveIndex；不会复制原始第三方 Webhook Body 或秘密凭据。备份/恢复都会失败关闭而不毁损原有身份与失败历史；官方 Human-only Key 的真实部署、可信外部备份与隔离恢复演练仍 Pending。
 - [QUAL-50 磁盘保护](../../docs/security/qual50-adapter-disk-watermark-2026-11-04.md) 与 [安全签名归档/隔离恢复](../../docs/security/qual50-signed-spool-backup-2026-11-04.md) 分别记录实际测试、性能和安全边界。
 
@@ -118,7 +123,7 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 
 从本阶段候选代码起，RestoreSignedBackup 在对外发布之前为每个恢复队列持久写入双份 owner-only 0600 恢复标记，强制 Quarantined 状态；一个标记缺失、权限错误或内容不匹配，OpenSpool 会拒绝。受控 inspect 可查看 recovery 和 capacity.ingress_blocked，serve/once、Enqueue/PinTarget/Update、人工重排和归档都会 fail closed。即使新的操作员将已恢复数据再次备份并恢复，它也仍然被隔离。本地无 --approve 绕过开关，不接触 Human-only HMAC。
 
-此外，新建的 Spool 现在必须持久保存双份绑定根目录路径的 `active-source-origin*.json`，只有 OpenSpool 首次创建真正不存在的目录才可生成。未知旧 Spool 不能自动取得新来源身份；恢复签名 ZIP 不携带 ACTIVE 见证。即使意外**同时删除两份 quarantine**，没有 ACTIVE 见证的已恢复快照仍不能被 OpenSpool/serve/once/Enqueue 当作新来源，从而避免一种 fail-open 恢复路径。迁移旧合法目录必须受控保留并核对完整事实，不可通过清空历史重建 Spool。隔离 Go Race 49 条和真实临时 Goose17/12 专项19条已通过。
+此外，新建的 Spool 现在必须持久保存双份绑定根目录路径的 `active-source-origin*.json`，正式 CLI 仅在 Operator 显式 `init --approve` 后创建真正不存在的根目录，`serve`/`once`/`inspect` 始终使用 `OpenExistingSpool`，不再自动补建未知来源。未知旧 Spool 不能自动取得新来源身份；恢复签名 ZIP 不携带 ACTIVE 见证。即使意外**同时删除两份 quarantine**，没有 ACTIVE 见证的已恢复快照仍不能被 OpenSpool/serve/once/Enqueue 当作新来源，从而避免一种 fail-open 恢复路径。迁移旧合法目录必须受控保留并核对完整事实，不可通过清空历史重建 Spool。隔离 Go Race 49 条和真实临时 Goose17/12 专项19条已通过。
 
 这仍不是完整的可信来源账本对账；同 OS UID 可伪造/删改本地见证、旧版二进制可忽略它。生产激活前必须完成由不同真实授权主体维护的完整来源事实水位／独立核验和部署隔离。详见 [QUAL-51 恢复隔离设计与剩余阻断项](../../docs/security/qual51-restored-snapshot-quarantine-2026-11-04.md) 及 [新鲜 Spool 双来源标记门禁](../../docs/security/qual51-origin-witness-deny-by-default-2026-11-04.md)。
 
@@ -128,4 +133,4 @@ delivered_used 仅计仍占用热目录的记录，可以通过受控归档恢�
 
 只读检查在恢复队列双锁内进行：发现 T0 旧备份缺失 T1 来源事实、Qual Event 错配、来源序列缺口、重复已签 Body、过期水位或伪造签名时拒绝或标记不一致。即使所有提交的证明一一对应，返回值也始终是 `activation_authorized=false`、`latest_source_externally_proven=false`、`requires_independent_review=true`；恢复队列继续 Quarantined，绝不启动 `serve`/`once`。
 
-源码上限是从第一个来源事实开始连续的 10,000 个事件和总计 4 MiB 的规范证据；它不能单独承担无限历史生产账本或认证不同真实 Human/OS 主体。真实来源签发、Qual 可信导出、外部最新水位和受权激活**均未实现**。本地仅使用随机测试 Ed25519 私钥验证实现与安全负例。协议和发布阻断详见 [QUAL-51 独立签名来源对账的工程协议](../../docs/security/qual51-independent-signed-reconciliation-2026-11-03.md)。
+当前还提供**只读 Operator CLI**：`qual-github-adapter reconcile-audit --keys /private/pinned-public-keys.json --evidence /private/signed-ledgers.json`，输入文件必须为 owner-only 0600，只有对已隔离恢复来源进行校验；即使 `records_match=true`，也不表示外部最新水位或恢复激活。详见 [只读对账与独立卷备份的实际操作/负例回归](../../docs/security/qual50-51-operator-audit-and-volume-gate-2026-11-04.md)。源码上限是从第一个来源事实开始连续的 10,000 个事件和总计 4 MiB 的规范证据；它不能单独承担无限历史生产账本或认证不同真实 Human/OS 主体。真实来源签发、Qual 可信导出、外部最新水位和受权激活**均未实现**。本地仅使用随机测试 Ed25519 私钥验证实现与安全负例。协议和发布阻断详见 [QUAL-51 独立签名来源对账的工程协议](../../docs/security/qual51-independent-signed-reconciliation-2026-11-03.md)。
