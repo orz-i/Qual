@@ -32,6 +32,6 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	bridge := mcpserver.Bridge{APIURL: apiURL, Bearer: bearer}
+	bridge := mcpserver.Config{APIURL: apiURL, Bearer: bearer}
 	return mcpserver.New(bridge).Run(ctx, &mcp.StdioTransport{})
 }

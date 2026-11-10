@@ -28,7 +28,7 @@ type ExternalReferenceArgs struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-func (b Bridge) evidenceRemote(ctx context.Context, action string, input any) (map[string]any, error) {
+func (b Config) evidenceRemote(ctx context.Context, action string, input any) (map[string]any, error) {
 	if b.APIURL == "" {
 		return nil, errors.New("EVIDENCE_REST_ADAPTER_REQUIRED")
 	}
@@ -91,7 +91,7 @@ func (b Bridge) evidenceRemote(ctx context.Context, action string, input any) (m
 		return nil, errors.New("UNKNOWN_EVIDENCE_TOOL")
 	}
 }
-func addEvidenceTools(server *mcp.Server, b Bridge) {
+func addEvidenceTools(server *mcp.Server, b Config) {
 	mcp.AddTool(server, &mcp.Tool{Name: "artifact_search", Description: "List project-scoped verified Artifact metadata for a WorkItem/TestCase/Run/Attempt; use CLI/API for file bytes."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ArtifactListArgs) (*mcp.CallToolResult, map[string]any, error) {
 			value, err := b.evidenceRemote(ctx, "artifact_search", in)

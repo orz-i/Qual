@@ -19,7 +19,7 @@ func TestPhase5MCPArtifactAndReferenceTools(t *testing.T) {
 	work := create(t, f, f.agent, "MCP artifact record")
 	id, _ := testUploadArtifact(t, f, work["id"].(string), []byte("MCP artifact bytes reported by external Agent"))
 	ctx := context.Background()
-	server := mcpserver.New(mcpserver.Bridge{APIURL: f.server.URL, Bearer: f.agent})
+	server := mcpserver.New(mcpserver.Config{APIURL: f.server.URL, Bearer: f.agent})
 	a, b := mcp.NewInMemoryTransports()
 	s, err := server.Connect(ctx, a, nil)
 	if err != nil {

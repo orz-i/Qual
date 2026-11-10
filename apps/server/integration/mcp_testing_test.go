@@ -14,7 +14,7 @@ import (
 func TestMCPTestingRecordsUseREST(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	server := mcpserver.New(mcpserver.Bridge{APIURL: f.server.URL, Bearer: f.agent})
+	server := mcpserver.New(mcpserver.Config{APIURL: f.server.URL, Bearer: f.agent})
 	a, b := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(ctx, a, nil)
 	if err != nil {

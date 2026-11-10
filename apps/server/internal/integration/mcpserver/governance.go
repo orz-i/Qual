@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"qual/internal/work/application"
@@ -42,7 +41,7 @@ type GovernanceCompleteArgs struct {
 	IdempotencyKey        string `json:"idempotency_key"`
 }
 
-func (b Bridge) governanceRemote(ctx context.Context, action, projectID, itemID string, body any, idem string) (map[string]any, error) {
+func (b Config) governanceRemote(ctx context.Context, action, projectID, itemID string, body any, idem string) (map[string]any, error) {
 	if b.APIURL == "" {
 		return nil, errors.New("REST_ADAPTER_REQUIRED")
 	}
@@ -64,26 +63,11 @@ func (b Bridge) governanceRemote(ctx context.Context, action, projectID, itemID 
 	return nil, errors.New("VALIDATION_ERROR")
 }
 
-func addGovernanceTools(server *mcp.Server, b Bridge) {
+func addGovernanceTools(server *mcp.Server, b Config) {
 	mcp.AddTool(server, &mcp.Tool{Name: "project_review_policy_get", Description: "Read real project review-policy defaults, effective restrictions and CAS version; disabled on Goose12."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in GovernanceProjectArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				v, e := b.governanceRemote(ctx, "policy_read", in.ProjectID, "", nil, "")
-				return nil, v, e
-			}
-			actor, e := b.actor(ctx)
-			if e != nil {
-				return nil, nil, e
-			}
-			id, _, e := parseIDs(in.ProjectID, "")
-			if e != nil {
-				return nil, nil, e
-			}
-			v, e := b.Work.GetProjectReviewPolicy(ctx, actor, id)
-			if e != nil {
-				return nil, nil, userError(e)
-			}
-			return nil, map[string]any{"review_policy": v}, nil
+			v, e := b.governanceRemote(ctx, "policy_read", in.ProjectID, "", nil, "")
+			return nil, v, e
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "project_review_policy_change", Description: "CAS project policy change. Requires access:manage; loosening Owner acceptance or high-risk rule requires actual Human Workspace Admin. Never grants the caller privileges."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in GovernancePolicyChangeArgs) (*mcp.CallToolResult, map[string]any, error) {
@@ -94,43 +78,13 @@ func addGovernanceTools(server *mcp.Server, b Bridge) {
 			if e := data.Validate(); e != nil {
 				return nil, nil, userError(e)
 			}
-			if b.APIURL != "" {
-				v, e := b.governanceRemote(ctx, "policy_change", in.ProjectID, "", data, in.IdempotencyKey)
-				return nil, v, e
-			}
-			actor, e := b.actor(ctx)
-			if e != nil {
-				return nil, nil, e
-			}
-			id, _, e := parseIDs(in.ProjectID, "")
-			if e != nil {
-				return nil, nil, e
-			}
-			v, e := b.Work.ChangeProjectReviewPolicy(ctx, actor, id, data, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if e != nil {
-				return nil, nil, userError(e)
-			}
-			return nil, map[string]any{"review_policy": v}, nil
+			v, e := b.governanceRemote(ctx, "policy_change", in.ProjectID, "", data, in.IdempotencyKey)
+			return nil, v, e
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_acceptance_get", Description: "Read genuine WorkItem acceptance decision or legacy_unclassified historical Done. No fabricated Reviewer or credential secrets."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in GovernanceItemArgs) (*mcp.CallToolResult, map[string]any, error) {
-			if b.APIURL != "" {
-				v, e := b.governanceRemote(ctx, "acceptance_read", in.ProjectID, in.ItemID, nil, "")
-				return nil, v, e
-			}
-			actor, e := b.actor(ctx)
-			if e != nil {
-				return nil, nil, e
-			}
-			p, id, e := parseIDs(in.ProjectID, in.ItemID)
-			if e != nil {
-				return nil, nil, e
-			}
-			v, e := b.Work.ReadAcceptanceHistory(ctx, actor, p, id)
-			if e != nil {
-				return nil, nil, userError(e)
-			}
-			return nil, map[string]any{"acceptance": v}, nil
+			v, e := b.governanceRemote(ctx, "acceptance_read", in.ProjectID, in.ItemID, nil, "")
+			return nil, v, e
 		})
 	mcp.AddTool(server, &mcp.Tool{Name: "work_item_complete", Description: "Complete in_review only through explicit independent_review or Owner self-acceptance. Real work:review, verified same-work evidence, policy and CAS required; never invents reviewer approval."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in GovernanceCompleteArgs) (*mcp.CallToolResult, map[string]any, error) {
@@ -140,22 +94,7 @@ func addGovernanceTools(server *mcp.Server, b Bridge) {
 			d := domain.DoneDecision{Mode: domain.ReviewPolicyMode(in.AcceptanceMode), ExpectedVersion: in.ExpectedVersion,
 				Reason: in.Reason, AcknowledgeSelfReview: in.AcknowledgeSelfReview,
 				ReferenceKind: domain.ReferenceKind(in.ReferenceKind), ReferenceValue: in.ReferenceValue}
-			if b.APIURL != "" {
-				v, e := b.governanceRemote(ctx, "complete", in.ProjectID, in.ItemID, d, in.IdempotencyKey)
-				return nil, v, e
-			}
-			actor, e := b.actor(ctx)
-			if e != nil {
-				return nil, nil, e
-			}
-			p, id, e := parseIDs(in.ProjectID, in.ItemID)
-			if e != nil {
-				return nil, nil, e
-			}
-			v, e := b.Work.Complete(ctx, actor, p, id, d, application.Meta{RequestID: uuid.NewString(), IdempotencyKey: in.IdempotencyKey})
-			if e != nil {
-				return nil, nil, userError(e)
-			}
-			return nil, map[string]any{"work_item": v}, nil
+			v, e := b.governanceRemote(ctx, "complete", in.ProjectID, in.ItemID, d, in.IdempotencyKey)
+			return nil, v, e
 		})
 }

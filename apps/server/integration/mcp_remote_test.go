@@ -19,7 +19,7 @@ import (
 func TestMCPStdioRemoteAdapterUsesOnlyScopedHTTP(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	server := mcpserver.New(mcpserver.Bridge{APIURL: f.server.URL, Bearer: f.agent})
+	server := mcpserver.New(mcpserver.Config{APIURL: f.server.URL, Bearer: f.agent})
 	a, b := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, a, nil)
 	if err != nil {
@@ -84,8 +84,8 @@ func TestMCPActualStdioProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stdio list tools: %v", err)
 	}
-	if len(tools.Tools) != 34 {
-		t.Fatalf("stdio tools got %d, want 34", len(tools.Tools))
+	if len(tools.Tools) != 42 {
+		t.Fatalf("stdio tools got %d, want 42", len(tools.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "work_item_search",
 		Arguments: map[string]any{"project_id": f.project.String(), "limit": 10}})

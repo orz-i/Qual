@@ -23,7 +23,7 @@ type RoleRecordArgs struct {
 	IdempotencyKey  string `json:"idempotency_key"`
 }
 
-func (b Bridge) roleRemote(ctx context.Context, action, projectID, itemID string, input *RoleRecordArgs) (map[string]any, error) {
+func (b Config) roleRemote(ctx context.Context, action, projectID, itemID string, input *RoleRecordArgs) (map[string]any, error) {
 	if b.APIURL == "" {
 		return nil, errors.New("ROLE_REST_ADAPTER_REQUIRED")
 	}
@@ -52,7 +52,7 @@ func (b Bridge) roleRemote(ctx context.Context, action, projectID, itemID string
 		return nil, errors.New("UNKNOWN_ROLE_TOOL")
 	}
 }
-func addRoleTools(server *mcp.Server, b Bridge) {
+func addRoleTools(server *mcp.Server, b Config) {
 	mcp.AddTool(server, &mcp.Tool{Name: "work_role_entries_search",
 		Description: "Read immutable per-WorkItem capacity records by real Principal (executor/tester/reviewer/auditor); mark self_review when appropriate. Does not execute Agents or tests."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RoleSearchArgs) (*mcp.CallToolResult, map[string]any, error) {

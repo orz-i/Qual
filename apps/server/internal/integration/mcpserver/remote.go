@@ -35,7 +35,7 @@ func ValidateAPIURL(raw string) (string, error) {
 	return strings.TrimSuffix(raw, "/"), nil
 }
 
-func (b Bridge) call(ctx context.Context, method, path string, payload any, idemKey string, version int64) (map[string]any, error) {
+func (b Config) call(ctx context.Context, method, path string, payload any, idemKey string, version int64) (map[string]any, error) {
 	if b.APIURL == "" {
 		return nil, errors.New("INTERNAL_ERROR")
 	}
@@ -100,7 +100,7 @@ func (b Bridge) call(ctx context.Context, method, path string, payload any, idem
 	return result, nil
 }
 
-func (b Bridge) remote(ctx context.Context, tool string, input any) (map[string]any, error) {
+func (b Config) remote(ctx context.Context, tool string, input any) (map[string]any, error) {
 	// Tool arguments are validated by the official SDK before reaching this adapter.
 	var project string
 	var item string
@@ -116,6 +116,9 @@ func (b Bridge) remote(ctx context.Context, tool string, input any) (map[string]
 	case CreateArgs:
 		project = v.ProjectID
 	case WriteArgs:
+		project = v.ProjectID
+		item = v.ItemID
+	case ReassignArgs:
 		project = v.ProjectID
 		item = v.ItemID
 	case UpdateArgs:
@@ -165,32 +168,18 @@ func (b Bridge) remote(ctx context.Context, tool string, input any) (map[string]
 	case "work_item_get":
 		item, err := b.call(ctx, "GET", workURL, nil, "", 0)
 		return map[string]any{"work_item": item}, err
+	case "work_item_capabilities_get":
+		return b.call(ctx, "GET", workURL+"/capabilities", nil, "", 0)
 	case "work_item_get_context":
 		a := input.(ContextArgs)
-		if a.Section != "" || a.Limit != 0 || a.Cursor != "" {
-			q, err := contextSectionQuery(a.Section, a.Limit, a.Cursor)
-			if err != nil {
-				return nil, err
-			}
-			return b.call(ctx, "GET", workURL+"/context?"+q.Encode(), nil, "", 0)
-		}
-		item, err := b.call(ctx, "GET", workURL, nil, "", 0)
+		q, err := contextSectionQuery(a.Section, a.Limit, a.Cursor)
 		if err != nil {
 			return nil, err
 		}
-		comments, err := b.call(ctx, "GET", workURL+"/comments", nil, "", 0)
-		if err != nil {
-			return nil, err
-		}
-		deps, err := b.call(ctx, "GET", workURL+"/dependencies", nil, "", 0)
-		if err != nil {
-			return nil, err
-		}
-		recent, _ := comments["items"].([]any)
-		if len(recent) > 10 {
-			recent = recent[:10]
-		}
-		return map[string]any{"schema_version": 1, "work_item": item, "recent_comments": recent, "dependencies": deps["items"], "context_revision": item["version"]}, nil
+		// Default to the authoritative bounded Context v2 overview.
+		// The former v1 synthesis issued four unrelated REST requests, with
+		// no consistent task-version snapshot between them.
+		return b.call(ctx, "GET", workURL+"/context?"+q.Encode(), nil, "", 0)
 	case "work_item_create":
 		a := input.(CreateArgs)
 		body := map[string]any{"kind": a.Kind, "title": a.Title, "priority": a.Priority, "description": a.Description, "acceptance_criteria": a.AcceptanceCriteria}
@@ -205,6 +194,22 @@ func (b Bridge) remote(ctx context.Context, tool string, input any) (map[string]
 	case "work_item_claim":
 		a := input.(WriteArgs)
 		item, err := b.call(ctx, "POST", workURL+"/claim", map[string]any{"expected_version": a.ExpectedVersion}, a.IdempotencyKey, 0)
+		return map[string]any{"work_item": item}, err
+	case "work_item_release":
+		a := input.(WriteArgs)
+		item, err := b.call(ctx, "POST", workURL+"/release", map[string]any{"expected_version": a.ExpectedVersion}, a.IdempotencyKey, 0)
+		return map[string]any{"work_item": item}, err
+	case "work_item_reassign":
+		a := input.(ReassignArgs)
+		item, err := b.call(ctx, "POST", workURL+"/reassign", map[string]any{"new_assignee_id": a.NewAssigneeID, "expected_version": a.ExpectedVersion}, a.IdempotencyKey, 0)
+		return map[string]any{"work_item": item}, err
+	case "work_item_review_claim", "work_item_review_release":
+		a := input.(WriteArgs)
+		path := "/review-claim"
+		if tool == "work_item_review_release" {
+			path = "/review-release"
+		}
+		item, err := b.call(ctx, "POST", workURL+path, map[string]any{"expected_version": a.ExpectedVersion}, a.IdempotencyKey, 0)
 		return map[string]any{"work_item": item}, err
 	case "work_item_update":
 		a := input.(UpdateArgs)

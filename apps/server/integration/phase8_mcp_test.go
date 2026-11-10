@@ -16,7 +16,7 @@ func TestPhase8MCPAccessToolsRespectScopeAndDelegation(t *testing.T) {
 	ctx := context.Background()
 	principal := principalFor(t, f, f.agent)
 	managerToken := createAccessToken(t, f, principal, []string{"access:manage", "work:read"})
-	bridge := mcpserver.Bridge{APIURL: f.server.URL, Bearer: managerToken}
+	bridge := mcpserver.Config{APIURL: f.server.URL, Bearer: managerToken}
 	server := mcpserver.New(bridge)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	sessionServer, err := server.Connect(ctx, serverTransport, nil)

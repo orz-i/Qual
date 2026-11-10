@@ -9,19 +9,12 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	idpostgres "qual/internal/identity/infrastructure/postgres"
 	"qual/internal/integration/mcpserver"
-	workapp "qual/internal/work/application"
-	workpostgres "qual/internal/work/infrastructure/postgres"
 )
 
 func TestMCPWorkToolsUseSameAuthorizedService(t *testing.T) {
 	f := setup(t)
-	auth := idpostgres.Repository{Pool: f.pool}
-	server := mcpserver.New(mcpserver.Bridge{
-		Auth: auth, Bearer: f.agent,
-		Work: workapp.Service{Identity: auth, Work: workpostgres.Repository{Pool: f.pool}},
-	})
+	server := mcpserver.New(mcpserver.Config{APIURL: f.server.URL, Bearer: f.agent})
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	session, err := server.Connect(ctx, serverTransport, nil)
@@ -109,7 +102,15 @@ func TestMCPWorkToolsUseSameAuthorizedService(t *testing.T) {
 		t.Fatalf("MCP context err=%v result=%v", err, result)
 	}
 	raw, _ = json.Marshal(result.StructuredContent)
-	if !strings.Contains(string(raw), "context_revision") {
-		t.Fatalf("missing structured context: %s", raw)
+	var contextV2 map[string]any
+	if err := json.Unmarshal(raw, &contextV2); err != nil {
+		t.Fatal(err)
+	}
+	if contextV2["schema_version"] != float64(2) || contextV2["section"] != "overview" ||
+		contextV2["context_revision"] != float64(2) {
+		t.Fatalf("omitted MCP section must use authoritative v2 overview: %s", raw)
+	}
+	if _, oldSynthesis := contextV2["recent_comments"]; oldSynthesis {
+		t.Fatal("obsolete context v1 multi-REST synthesis remained reachable")
 	}
 }
