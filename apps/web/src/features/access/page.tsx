@@ -13,6 +13,7 @@ import {
   allPermissions, permissionLabels, useMyAccess, useAccessMembers, useChangeAccess,
   type PermissionName, type PermissionEffect,
 } from '@/features/access/api'
+import { canGrantIntegrationPermission } from '@/features/access/permission-rules'
 
 const effectLabels:Record<PermissionEffect,string>={inherit:'继承角色',allow:'明确允许',deny:'明确拒绝'}
 const principalTypeLabels:Record<string,string>={human:'Human',agent:'Agent',integration:'Integration'}
@@ -45,7 +46,7 @@ export function ProjectAccessPage(){
   const lockedAdmin=chosen?.role==='workspace_admin'
   const managementChange=permission==='access:manage'&&my.data?.role!=='workspace_admin'
   const reporterRestricted=chosen?.kind==='integration'&&
-    !['test:read','test:write','artifact:read','artifact:write'].includes(permission)
+    !canGrantIntegrationPermission(permission)
   const unchanged=setting?.effect===effect
   const canSubmit=!!chosen&&!!setting&&!selfChange&&!lockedAdmin&&!managementChange&&!reporterRestricted
     &&!unchanged&&reason.trim().length>=3&&reason.trim().length<=500&&!change.isPending
@@ -207,7 +208,7 @@ export function ProjectAccessPage(){
               </div>
               {setting&&<p className="text-sm text-muted-foreground">现有效果：{effectLabels[setting.effect]} · 项目策略当前{setting.allowed_by_project?'允许':'拒绝'}（还受令牌 Scope 约束）。</p>}
               {managementChange&&<ErrorLine message="只有 Human Workspace Admin 可委托 access:manage。"/>}
-              {reporterRestricted&&<ErrorLine message="Integration Reporter 不可获得非测试/证据管理权限。"/>}
+              {reporterRestricted&&<ErrorLine message="Integration 仅可获得测试、证据或显式授权的 Event/AgentRun 上报权限。"/>}
               {unchanged&&chosen&&<p className="text-sm text-muted-foreground">目标效果与现有记录相同，不需要重复写入。</p>}
               <ErrorLine message={change.error?.message}/>
               {success&&<p role="status" className="text-sm">{success}</p>}

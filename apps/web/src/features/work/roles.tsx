@@ -14,7 +14,8 @@ import { api, apiErrorMessage, QualAPIError, requestKey } from '@/lib/qual-api'
 import { useProjectPrincipals, principalLabel } from '@/features/work/principals'
 import { useSession } from '@/features/auth/session'
 import { useMyAccess } from '@/features/access/api'
-import { workKey } from '@/features/work/api'
+import { workKey, useWorkCapabilities } from '@/features/work/api'
+import { allowsTaskAction } from '@/features/work/capabilities'
 
 type Capacity = components['schemas']['RoleCapacity']
 type Outcome = components['schemas']['RoleOutcome']
@@ -38,12 +39,16 @@ export function WorkRoleHistory({projectID,itemID,version}:{
  const queryClient=useQueryClient()
  const {data:session}=useSession()
  const access=useMyAccess(projectID)
+ const capabilities=useWorkCapabilities(projectID,itemID)
  const perms=access.data?.effective_permissions??[]
+ const can=(action:import('@/features/work/capabilities').TaskAction)=>
+  allowsTaskAction(capabilities.data,version,action)
  const allowedCapacities:Capacity[]=[
-  ...(perms.includes('work:write')?['executor' as Capacity]:[]),
-  ...(perms.includes('test:write')&&perms.includes('work:read')?['tester' as Capacity]:[]),
-  ...(perms.includes('work:review')&&perms.includes('work:read')?['reviewer' as Capacity]:[]),
-  ...(perms.includes('audit:read')&&perms.includes('work:read')&&perms.includes('work:write')?['auditor' as Capacity]:[]),
+  ...(can('task.record_executor')?['executor' as Capacity]:[]),
+  ...(can('task.record_tester')?['tester' as Capacity]:[]),
+  ...(can('task.record_review')?['reviewer' as Capacity]:[]),
+  ...(capabilities.data?.project_mode==='legacy'&&
+    perms.includes('audit:read')&&perms.includes('work:read')&&perms.includes('work:write')?['auditor' as Capacity]:[]),
  ]
  const [capacity,setCapacity]=useState<Capacity>('executor')
  const chosenCapacity=allowedCapacities.includes(capacity)?capacity:allowedCapacities[0]
@@ -132,10 +137,10 @@ export function WorkRoleHistory({projectID,itemID,version}:{
       </div>
      ))}
     </div>
-    {access.isPending&&<p role="status" className="border-t pt-4 text-xs text-muted-foreground">正在确认追加职责所需权限…</p>}
-    {access.isError&&<p role="alert" className="border-t pt-4 text-xs text-destructive">当前权限读取失败，已隐藏职责追加表单。</p>}
-    {access.isSuccess&&allowedCapacities.length===0&&<p className="border-t pt-4 text-xs text-muted-foreground">当前身份可以查阅职责履历，但没有追加履历的权限。</p>}
-    {access.isSuccess&&allowedCapacities.length>0&&<form className="flex flex-col gap-3 border-t pt-4" onSubmit={submit}>
+    {capabilities.isPending&&<p role="status" className="border-t pt-4 text-xs text-muted-foreground">正在校验本任务的职责授权…</p>}
+    {(capabilities.isError||access.isError)&&<p role="alert" className="border-t pt-4 text-xs text-destructive">当前权限读取失败，已隐藏职责追加表单。</p>}
+    {capabilities.isSuccess&&allowedCapacities.length===0&&<p className="border-t pt-4 text-xs text-muted-foreground">当前身份可以查阅职责履历，但没有追加履历的权限。</p>}
+    {capabilities.isSuccess&&allowedCapacities.length>0&&<form className="flex flex-col gap-3 border-t pt-4" onSubmit={submit}>
      <h3 className="font-semibold text-sm">追加一条真实履历</h3>
      <div className="grid gap-3 sm:grid-cols-2">
       <Field>
