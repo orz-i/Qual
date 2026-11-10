@@ -100,7 +100,7 @@ func (r Repository) CreateRun(ctx context.Context, actor identity.Actor, p ident
 			return nil, err
 		}
 		if in.WorkItemID != nil && !boundSchema {
-			return nil, domain.ErrValidation
+			return nil, domain.ErrRunBindingUnavailable
 		}
 		if in.ExternalRunKey != "" {
 			var exists bool

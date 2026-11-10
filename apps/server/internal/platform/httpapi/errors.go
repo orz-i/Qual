@@ -106,6 +106,10 @@ func handleError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusConflict, "DUPLICATE_TEST_RECORD", "Test record already exists")
 	case errors.Is(err, testingdomain.ErrNotFailed):
 		writeError(w, r, http.StatusUnprocessableEntity, "NOT_FAILED", "Only a failed attempt can link to a defect")
+	case errors.Is(err, testingdomain.ErrRunBindingUnavailable):
+		// Only absence of the actual Goose20 binding column returns this code.
+		// Clients must never downgrade on a generic validation/auth error.
+		writeError(w, r, http.StatusUnprocessableEntity, "RUN_BINDING_UNAVAILABLE", "This schema cannot bind old TestRuns to a WorkItem")
 	case errors.Is(err, testingdomain.ErrValidation):
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Invalid testing data")
 	case errors.Is(err, application.ErrPrecondition):
