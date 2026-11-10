@@ -88,6 +88,21 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	}
 	writeMapping(false)
 
+	// The adapter's *real* new-source lifecycle requires explicit operator
+	// initialization. This is a brand-new disposable spool under t.TempDir,
+	// never an existing source whose archive/tombstones could be lost.
+	init := exec.Command(binary, "init", "--approve")
+	init.Env = environment
+	if output, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("explicit synthetic adapter source init failed: %v output_bytes=%d", err, len(output))
+	} else {
+		var receipt map[string]any
+		if json.Unmarshal(output, &receipt) != nil || receipt["new_source_initialized"] != true ||
+			receipt["previous_delivery_history_restored"] != false || receipt["source_reconciliation_verified"] != false {
+			t.Fatalf("new adapter source initialization returned unsafe success metadata: %v", receipt)
+		}
+	}
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +137,14 @@ func TestQual36ExternalAdapterSignedSyntheticPRToRealGoose17PI(t *testing.T) {
 	}
 	if !ready {
 		t.Fatal("external adapter listener failed to initialize")
+	}
+	readyResponse, err := (&http.Client{Timeout: time.Second}).Get("http://" + addr + "/readyz")
+	if err != nil {
+		t.Fatalf("newly initialized source has no real readiness probe: %v", err)
+	}
+	readyResponse.Body.Close()
+	if readyResponse.StatusCode != http.StatusOK {
+		t.Fatalf("explicitly initialized source readiness HTTP%d", readyResponse.StatusCode)
 	}
 
 	// Signed delivery is synthetic but corresponds to the real public PR #1.

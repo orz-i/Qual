@@ -24,7 +24,7 @@ func getenv(key, fallback string) string {
 	}
 	return fallback
 }
-func config() (githubadapter.Repository, *githubadapter.Spool, error) {
+func config(initializingNewSource bool) (githubadapter.Repository, *githubadapter.Spool, error) {
 	id, err := strconv.ParseInt(os.Getenv("QUAL_GITHUB_REPO_ID"), 10, 64)
 	if err != nil || id <= 0 {
 		return githubadapter.Repository{}, nil, githubadapter.ErrInvalid
@@ -40,9 +40,54 @@ func config() (githubadapter.Repository, *githubadapter.Spool, error) {
 		}
 		repo.InstallID = installID
 	}
-	spool, err := githubadapter.OpenSpool(os.Getenv("QUAL_GITHUB_SPOOL_DIR"))
+	// Never silently seed a new empty source during inspect, serve, once or
+	// maintenance: a missing spool could have contained old replay tombstones.
+	root := os.Getenv("QUAL_GITHUB_SPOOL_DIR")
+	if initializingNewSource {
+		spool, err := githubadapter.InitNewSpool(root)
+		return repo, spool, err
+	}
+	spool, err := githubadapter.OpenExistingSpool(root)
 	return repo, spool, err
 }
+
+// inspection distinguishes new intake capacity from the ability to drain
+// existing Pending. A full Pending queue can still be published; disk reserve,
+// full Delivered, and restored quarantine block durable delivery changes.
+// These flags describe local spool gates, not GitHub/Qual credentials or TLS.
+func inspection(repo githubadapter.Repository, states map[string]int,
+	capacity githubadapter.CapacityStatus, recovery githubadapter.RecoveryStatus) map[string]any {
+	return map[string]any{
+		"repository_id": repo.ID, "repository": repo.FullName,
+		"states": states, "capacity": capacity, "recovery": recovery,
+		"ingress_allowed": !capacity.IngressBlocked && !recovery.Quarantined,
+		"qual_publishing_allowed": !recovery.Quarantined && !capacity.DiskIngressBlocked &&
+			capacity.DeliveredUsed < capacity.DeliveredLimit,
+	}
+}
+
+// healthz is process liveness. readyz checks the current on-disk intake gate
+// and must report 503 when capacity or origin integrity is unsafe.
+func serveMux(handler http.Handler, spool *githubadapter.Spool) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("POST /github/webhook", handler)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if err := spool.IngressReadiness(); err != nil {
+			http.Error(w, "durable ingress unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+	return mux
+}
+
 func output(data any) {
 	bytes, err := json.Marshal(data)
 	if err != nil {
@@ -52,10 +97,18 @@ func output(data any) {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: qual-github-adapter serve|once|inspect|requeue|archive|backup --out <private.zip> --approve|restore --file <private.zip> --into <new-dir> --approve")
+		return fmt.Errorf("usage: qual-github-adapter init --approve|serve|once|inspect|requeue|archive|backup --out <private.zip> --approve|restore --file <private.zip> --into <new-dir> --approve|reconcile-audit --keys <pinned-public-keys.json> --evidence <signed-ledgers.json>")
 	}
 	command := os.Args[1]
-	if command == "requeue" {
+	if command == "init" {
+		if len(os.Args) != 3 || os.Args[2] != "--approve" {
+			return fmt.Errorf("new source initialization requires init --approve; never use for a restored or lost spool")
+		}
+	} else if command == "reconcile-audit" {
+		if len(os.Args) != 6 || os.Args[2] != "--keys" || os.Args[4] != "--evidence" {
+			return fmt.Errorf("read-only reconciliation requires --keys <pinned-public-keys.json> --evidence <signed-ledgers.json>")
+		}
+	} else if command == "requeue" {
 		if len(os.Args) != 6 || os.Args[3] != "--approve" || os.Args[4] != "--reason-code" {
 			return fmt.Errorf("manual requeue requires delivery ID, --approve and --reason-code")
 		}
@@ -64,8 +117,10 @@ func run() error {
 			return fmt.Errorf("archiving requires a bounded count and explicit --approve")
 		}
 	} else if command == "backup" {
-		if len(os.Args) != 5 || os.Args[2] != "--out" || os.Args[4] != "--approve" {
-			return fmt.Errorf("signed backup requires --out <new-private-zip> --approve")
+		if (len(os.Args) != 5 && len(os.Args) != 6) ||
+			os.Args[2] != "--out" || os.Args[4] != "--approve" ||
+			(len(os.Args) == 6 && os.Args[5] != "--require-separate-volume") {
+			return fmt.Errorf("signed backup requires --out <new-private-zip> --approve [--require-separate-volume]")
 		}
 	} else if command == "restore" {
 		if len(os.Args) != 7 || os.Args[2] != "--file" ||
@@ -90,18 +145,39 @@ func run() error {
 	} else if len(os.Args) != 2 || (command != "serve" && command != "once" && command != "inspect") {
 		return fmt.Errorf("unknown command or unexpected argument")
 	}
-	repo, spool, err := config()
+	repo, spool, err := config(command == "init")
 	if err != nil {
 		return fmt.Errorf("adapter repository/spool preflight failed")
 	}
 	switch command {
+	case "reconcile-audit":
+		return runReconciliationAudit(repo, spool, os.Args[3], os.Args[5])
+	case "init":
+		output(map[string]any{"new_source_initialized": true, "repository_id": repo.ID,
+			"repository": repo.FullName, "previous_delivery_history_restored": false,
+			"source_reconciliation_verified": false})
 	case "backup":
+		// A backup on the same device cannot satisfy the independent-volume
+		// protection requirement, no matter how valid its detached HMAC is.
+		separate, err := backupVolumeSeparation(spool.Root, os.Args[3])
+		if err != nil {
+			return fmt.Errorf("signed snapshot destination failed filesystem identity verification")
+		}
+		if len(os.Args) == 6 && !separate {
+			return errSeparateBackupVolumeRequired
+		}
 		stats, err := spool.CreateSignedBackup(os.Args[3], []byte(os.Getenv("QUAL_GITHUB_BACKUP_HMAC_KEY")))
 		if err != nil {
 			return fmt.Errorf("signed snapshot refused; inspect owner-only source and destination")
 		}
+		verified, err := backupVolumeSeparation(spool.Root, os.Args[3])
+		if err != nil || verified != separate {
+			return fmt.Errorf("backup storage identity changed during snapshot; do not trust separation")
+		}
 		output(map[string]any{"signed_backup_ready": true,
-			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256})
+			"record_count": stats.RecordCount, "archive_sha256": stats.ArchiveSHA256,
+			"separate_volume_verified": verified, "off_host_verified": false,
+			"encrypted": false})
 	case "archive":
 		limit, err := strconv.Atoi(os.Args[2])
 		if err != nil || limit < 1 || limit > 500 {
@@ -131,9 +207,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("recovery quarantine unreadable")
 		}
-		output(map[string]any{"repository_id": repo.ID, "repository": repo.FullName,
-			"states": counts, "capacity": capacity, "recovery": recovery,
-			"ingress_allowed": !recovery.Quarantined, "qual_publishing_allowed": !recovery.Quarantined})
+		output(inspection(repo, counts, capacity, recovery))
 	case "once":
 		publisher := githubadapter.Publisher{
 			Spool: spool, Repository: repo, MapPath: os.Getenv("QUAL_GITHUB_MAPPING_FILE"),
@@ -162,15 +236,8 @@ func run() error {
 		if err != nil || n < 1024 || n > 65535 {
 			return fmt.Errorf("invalid webhook listen port")
 		}
-		mux := http.NewServeMux()
-		mux.Handle("POST /github/webhook", handler)
-		mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte("ok"))
-		})
 		server := &http.Server{
-			Addr: hostport, Handler: mux, ReadHeaderTimeout: 4 * time.Second,
+			Addr: hostport, Handler: serveMux(handler, spool), ReadHeaderTimeout: 4 * time.Second,
 			ReadTimeout: 6 * time.Second, WriteTimeout: 8 * time.Second,
 			IdleTimeout: 12 * time.Second, MaxHeaderBytes: 8192,
 		}
