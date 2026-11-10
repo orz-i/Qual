@@ -52,7 +52,9 @@ export QUAL_BACKUP_HMAC_KEY="$(openssl rand -hex 32)"
 
 docker compose -f deploy/compose.dev.yaml exec -T postgres \
   createdb -U qual "$DB"
-GOOSE="${GOOSE:-goose}" DATABASE_URL="$DATABASE_URL" make migrate-up >"$TMP/migrate.log" 2>&1
+# The isolated Phase 6 API fixture is still the public Goose17 service.
+# Goose18..21 has its own scratch forward-only migration and provenance gate.
+"${GOOSE:-goose}" -dir apps/server/migrations postgres "$DATABASE_URL" up-to 17 >"$TMP/migrate.log" 2>&1
 (cd apps/server
  go build -o "$TMP/qual-server" ./cmd/server
  go build -o "$TMP/qual-admin" ./cmd/qual-admin

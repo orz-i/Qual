@@ -20,6 +20,10 @@ FROZEN_MIGRATIONS = {
     15: "00015_work_context_attempts_indexes.sql",  # QUAL-27
     16: "00016_agent_runs.sql",               # QUAL-32
     17: "00017_external_events.sql",          # QUAL-30; never reuse 15
+    18: "00018_task_authorization.sql",       # QUAL-55; projects remain legacy by default
+    19: "00019_work_review_assignments.sql",  # QUAL-57; active reviewer relation
+    20: "00020_bound_test_runs.sql",          # QUAL-58; immutable task binding
+    21: "00021_historical_test_run_attributions.sql", # QUAL-65; source-only provenance
 }
 
 

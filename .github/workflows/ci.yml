@@ -150,7 +150,9 @@ jobs:
           set -euo pipefail
           goose="$(go env GOPATH)/bin/goose"
           python3 -B scripts/ops/check_migration_sequence.py apps/server/migrations
-          GOOSE="$goose" make migrate-up
+          # Preserve the existing Goose17 API fixture contract until the
+          # task-scoped service is published in a separately verified PR.
+          "$goose" -dir apps/server/migrations postgres "$DATABASE_URL" up-to 17
           current="$(docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d qual -Atqc 'SELECT MAX(version_id) FROM public.goose_db_version WHERE is_applied')"
           test "$current" = '17'
           # Goose17 stores immutable ExternalEvent facts: destructive Down must
@@ -180,6 +182,9 @@ jobs:
           QUAL_S3_SECRET_KEY: qual_dev_only
           QUAL_S3_BUCKET: qual-artifacts
         run: bash scripts/tests/ci_goose17_guarded.sh
+      - name: Goose18–21 forward-only historical attribution in disposable PostgreSQL
+        shell: bash
+        run: bash scripts/tests/ci_goose21_forward_guarded.sh
       - name: Credential retirement with disposable PostgreSQL and synthetic tokens
         shell: bash
         env:
@@ -197,7 +202,7 @@ jobs:
           trap cleanup EXIT
           docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db;"
           scratch_url="postgres://qual:qual_dev_only@127.0.0.1:15432/$db?sslmode=disable"
-          DATABASE_URL="$scratch_url" GOOSE="$(go env GOPATH)/bin/goose" make migrate-up
+          "$(go env GOPATH)/bin/goose" -dir apps/server/migrations postgres "$scratch_url" up-to 17
           (
             cd apps/server
             QUAL_TEST_DATABASE_URL="$scratch_url" go test -race -tags=integration -count=1 -run '^(TestPhase7PATAuthoritativeRotationWithIsolatedDatabase|TestOperatorRetireSupersededRequiresProtectedCurrentTokenAndExplicitApply)$' -v ./integration
@@ -219,7 +224,7 @@ jobs:
           trap cleanup EXIT
           docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db;"
           scratch_url="postgres://qual:qual_dev_only@127.0.0.1:15432/$db?sslmode=disable"
-          DATABASE_URL="$scratch_url" GOOSE="$(go env GOPATH)/bin/goose" make migrate-up
+          "$(go env GOPATH)/bin/goose" -dir apps/server/migrations postgres "$scratch_url" up-to 17
           (cd apps/server && QUAL_TEST_DATABASE_URL="$scratch_url" go test -race -tags=integration -count=1 -run '^TestPhase12ExternalReportCLIRecordsOnceAcrossRetries$' -v ./integration)
       - name: WorkItem Git/TestRun evidence packet with disposable PostgreSQL and S3
         shell: bash
@@ -238,7 +243,7 @@ jobs:
           trap cleanup EXIT
           docker compose -f deploy/compose.dev.yaml exec -T postgres psql -U qual -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db;"
           scratch_url="postgres://qual:qual_dev_only@127.0.0.1:15432/$db?sslmode=disable"
-          DATABASE_URL="$scratch_url" GOOSE="$(go env GOPATH)/bin/goose" make migrate-up
+          "$(go env GOPATH)/bin/goose" -dir apps/server/migrations postgres "$scratch_url" up-to 17
           (cd apps/server && QUAL_TEST_DATABASE_URL="$scratch_url" go test -race -tags=integration -count=1 -run '^TestPhase13WorkItemEvidencePacketUsesRealGitRunAndS3$' -v ./integration)
       - name: Signed PostgreSQL and isolated S3 restore drill
         shell: bash
