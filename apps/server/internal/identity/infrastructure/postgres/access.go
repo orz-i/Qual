@@ -165,6 +165,13 @@ func (r Repository) Change(ctx context.Context, actor application.Actor, project
 		return setting, nil
 	}
 
+	// Serialize explicit permission changes with task decisions, including
+	// changes from inherit to deny where the override row did not exist.
+	var locked uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM qual.projects WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+		project.ID, project.WorkspaceID).Scan(&locked); err != nil {
+		return application.PermissionSetting{}, err
+	}
 	// Target must have active membership in this exact Project, or be its
 	// Workspace Admin. Never grant to arbitrary Principal UUID from elsewhere.
 	var targetKind domain.PrincipalType

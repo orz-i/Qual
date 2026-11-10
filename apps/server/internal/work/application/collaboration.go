@@ -21,7 +21,7 @@ func (s Service) AddComment(ctx context.Context, actor identity.Actor, projectID
 	if err := domain.ValidateComment(body); err != nil {
 		return domain.WorkItem{}, err
 	}
-	project, err := s.Identity.AuthorizeProject(ctx, actor, projectID, idomain.WorkWrite)
+	project, err := s.authorizeTaskProject(ctx, actor, projectID, idomain.WorkWrite)
 	if err != nil {
 		return domain.WorkItem{}, err
 	}
@@ -44,7 +44,7 @@ func (s Service) LinkDependency(ctx context.Context, actor identity.Actor, proje
 	if fromID == uuid.Nil || toID == uuid.Nil || fromID == toID {
 		return domain.WorkItem{}, domain.ErrDependency
 	}
-	project, err := s.Identity.AuthorizeProject(ctx, actor, projectID, idomain.WorkWrite)
+	project, err := s.authorizeTaskProject(ctx, actor, projectID, idomain.WorkWrite)
 	if err != nil {
 		return domain.WorkItem{}, err
 	}

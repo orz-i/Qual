@@ -166,8 +166,22 @@ func (r Repository) List(ctx context.Context, projectID uuid.UUID, filter applic
 
 func (r Repository) Create(ctx context.Context, actor identity.Actor, project identity.Project, draft domain.Draft, meta application.Meta, hash [32]byte) (domain.WorkItem, error) {
 	data, err := r.idempotent(ctx, actor, project, "create", meta, hash, func(tx pgx.Tx) (domain.WorkItem, error) {
+		// Create updates the project sequence; use an exclusive lock first
+		// to avoid concurrent SHARE-to-UPDATE upgrade deadlocks.
+		var projectLocked uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM qual.projects WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+			project.ID, project.WorkspaceID).Scan(&projectLocked); err != nil {
+			return domain.WorkItem{}, err
+		}
+		mode, err := r.lockTaskMode(ctx, tx, project)
+		if err != nil {
+			return domain.WorkItem{}, err
+		}
+		if err := r.authorizeTaskCreation(ctx, tx, actor, project, mode); err != nil {
+			return domain.WorkItem{}, err
+		}
 		var num int64
-		err := tx.QueryRow(ctx, `UPDATE qual.projects SET next_work_item_number=next_work_item_number+1
+		err = tx.QueryRow(ctx, `UPDATE qual.projects SET next_work_item_number=next_work_item_number+1
 			WHERE id=$1 AND workspace_id=$2 RETURNING next_work_item_number-1`, project.ID, actor.WorkspaceID).Scan(&num)
 		if err != nil {
 			return domain.WorkItem{}, err
@@ -218,6 +232,10 @@ func (r Repository) Create(ctx context.Context, actor identity.Actor, project id
 
 func (r Repository) Mutate(ctx context.Context, actor identity.Actor, project identity.Project, itemID uuid.UUID, mutation application.Mutation) (domain.WorkItem, error) {
 	data, err := r.idempotent(ctx, actor, project, mutation.Operation, mutation.Meta, mutation.RequestHash, func(tx pgx.Tx) (domain.WorkItem, error) {
+		mode, err := r.lockTaskMode(ctx, tx, project)
+		if err != nil {
+			return domain.WorkItem{}, err
+		}
 		w, err := scanItem(tx.QueryRow(ctx, itemSelect+` WHERE w.project_id=$1 AND w.id=$2 FOR UPDATE OF w`, project.ID, itemID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.WorkItem{}, application.ErrNotFound
@@ -225,7 +243,38 @@ func (r Repository) Mutate(ctx context.Context, actor identity.Actor, project id
 		if err != nil {
 			return domain.WorkItem{}, err
 		}
-		oldVersion, oldStatus := w.Version, w.Status
+		// Preserve the existing CAS/ALREADY_CLAIMED contract before a scoped
+		// relation check would otherwise turn a race into an opaque 403.
+		if w.Version != mutation.Expected {
+			return domain.WorkItem{}, domain.ErrConflict
+		}
+		if mutation.Operation == "claim" && w.AssigneeID != nil {
+			return domain.WorkItem{}, domain.ErrClaimed
+		}
+		action := mutation.Action
+		permission := idomain.WorkWrite
+		switch mutation.Operation {
+		case "claim":
+			permission = idomain.WorkClaim
+		case "transition":
+			action = domain.TaskTransitionAction(w.Status, mutation.NextStatus)
+			if mutation.NextStatus == domain.Done {
+				permission = idomain.WorkReview
+			}
+		}
+		if mutation.Operation == "release" || mutation.Operation == "reassign" {
+			if err := r.authorizeExecutorChange(ctx, tx, actor, project, mode, w, action); err != nil {
+				return domain.WorkItem{}, err
+			}
+			if mutation.Operation == "reassign" {
+				if err := r.validateNewAssignee(ctx, tx, project, mutation.NewAssigneeID); err != nil {
+					return domain.WorkItem{}, err
+				}
+			}
+		} else if err := r.authorizeTaskWrite(ctx, tx, actor, project, mode, w, action, permission, "", false); err != nil {
+			return domain.WorkItem{}, err
+		}
+		oldVersion, oldStatus, oldAssignee := w.Version, w.Status, w.AssigneeID
 		if mutation.LegacyDoneAttempt {
 			// The legacy transition endpoint cannot bypass the acceptance
 			// gate once Goose13 is installed. Goose12 pilot history retains
@@ -238,8 +287,21 @@ func (r Repository) Mutate(ctx context.Context, actor identity.Actor, project id
 				return domain.WorkItem{}, domain.ErrDoneGate
 			}
 		}
-		if err := mutation.Apply(&w); err != nil {
+		if mutation.Operation == "claim" && mode == domain.TaskScopedAuthorization &&
+			w.Status == domain.InProgress && w.AssigneeID == nil {
+			// A released in-progress task is resumable by a new eligible Agent.
+			if err := w.ClaimResumed(actor.PrincipalID, mutation.Expected, time.Now()); err != nil {
+				return domain.WorkItem{}, err
+			}
+		} else if err := mutation.Apply(&w); err != nil {
 			return domain.WorkItem{}, err
+		}
+		if oldStatus == domain.InReview && w.Status != domain.InReview {
+			// A reviewer cannot retain authority after returning the WorkItem
+			// to implementation; historical passed/needs_work remains intact.
+			if err := dropActiveReviewer(ctx, tx, w); err != nil {
+				return domain.WorkItem{}, err
+			}
 		}
 		criteria, err := json.Marshal(w.AcceptanceCriteria)
 		if err != nil {
@@ -255,8 +317,12 @@ func (r Repository) Mutate(ctx context.Context, actor identity.Actor, project id
 		if tag.RowsAffected() != 1 {
 			return domain.WorkItem{}, domain.ErrConflict
 		}
-		err = r.emit(ctx, tx, actor, project, mutation.Meta.RequestID, "work_item."+mutation.Operation, w.ID, &oldVersion, w.Version,
-			map[string]any{"old_status": oldStatus, "status": w.Status, "version": w.Version})
+		diff := map[string]any{"old_status": oldStatus, "status": w.Status, "version": w.Version}
+		if mutation.Operation == "release" || mutation.Operation == "reassign" {
+			diff["old_assignee_id"] = oldAssignee
+			diff["new_assignee_id"] = w.AssigneeID
+		}
+		err = r.emit(ctx, tx, actor, project, mutation.Meta.RequestID, "work_item."+mutation.Operation, w.ID, &oldVersion, w.Version, diff)
 		return w, err
 	})
 	if err != nil {

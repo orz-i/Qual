@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	identity "qual/internal/identity/application"
+	idomain "qual/internal/identity/domain"
 	"qual/internal/work/application"
 	"qual/internal/work/domain"
 )
@@ -35,9 +36,8 @@ func (r Repository) Complete(ctx context.Context, actor identity.Actor, project 
 		}
 		// Lock the project policy namespace, including the case where the
 		// project still has no explicit row and inherits conservative defaults.
-		var locked uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM qual.projects WHERE id=$1 AND workspace_id=$2 FOR SHARE`,
-			project.ID, project.WorkspaceID).Scan(&locked); err != nil {
+		mode, err := r.lockTaskMode(ctx, tx, project)
+		if err != nil {
 			return domain.WorkItem{}, err
 		}
 		item, err := scanItem(tx.QueryRow(ctx, itemSelect+` WHERE w.project_id=$1 AND w.id=$2 FOR UPDATE OF w`, project.ID, itemID))
@@ -54,6 +54,14 @@ func (r Repository) Complete(ctx context.Context, actor identity.Actor, project 
 
 		policy, _, err := resolveWorkReviewPolicy(ctx, tx, item)
 		if err != nil {
+			return domain.WorkItem{}, err
+		}
+		action := domain.TaskCompleteIndependent
+		if decision.Mode == domain.OwnerAcceptance {
+			action = domain.TaskCompleteOwner
+		}
+		if err := r.authorizeTaskWrite(ctx, tx, actor, project, mode, item, action,
+			idomain.WorkReview, policy.Mode, policy.ForceIndependent); err != nil {
 			return domain.WorkItem{}, err
 		}
 		var material int64
@@ -112,6 +120,17 @@ func (r Repository) Complete(ctx context.Context, actor identity.Actor, project 
 				return domain.WorkItem{}, err
 			}
 		}
+		if mode == domain.TaskScopedAuthorization && decision.ReferenceKind == domain.TestRunReference {
+			// The new task binding is the authority for scoped test evidence.
+			// An old unbound Run must not be linked through shared Case coverage.
+			bound, schemaReady, err := taskBoundRun(ctx, tx, project.ID, id)
+			if err != nil {
+				return domain.WorkItem{}, err
+			}
+			if schemaReady && (bound == nil || *bound != item.ID) {
+				return domain.WorkItem{}, domain.ErrDoneGate
+			}
+		}
 		facts := domain.DoneGateFacts{
 			WorkItem: item, Policy: policy,
 			// WorkItem is locked: use the actual persisted assignee, never a
@@ -126,8 +145,34 @@ func (r Repository) Complete(ctx context.Context, actor identity.Actor, project 
 		if err := domain.EvaluateDoneGate(facts); err != nil {
 			return domain.WorkItem{}, err
 		}
+		// In task_scoped mode the independent reviewer who accepts must be
+		// the currently assigned reviewer and must have produced a new passed
+		// RoleEntry AFTER the latest claim. Old history cannot be replayed.
+		if mode == domain.TaskScopedAuthorization && decision.Mode == domain.IndependentReview {
+			reviewer, claimedVersion, err := activeReviewer(ctx, tx, item)
+			if err != nil {
+				return domain.WorkItem{}, err
+			}
+			if reviewer == nil || *reviewer != actor.PrincipalID ||
+				latest.ActorID != actor.PrincipalID || latest.WorkVersion <= claimedVersion {
+				return domain.WorkItem{}, domain.ErrDoneGate
+			}
+			// A Reviewer who reported a task-bound TestAttempt after recording
+			// passed cannot reuse the earlier independent RoleEntry. This guards
+			// existing TestRun paths until QUAL-58 makes them task-scoped too.
+			performedWork, err := wasTaskExecutor(ctx, tx, item, actor.PrincipalID)
+			if err != nil {
+				return domain.WorkItem{}, err
+			}
+			if performedWork {
+				return domain.WorkItem{}, domain.ErrDoneGate
+			}
+		}
 		before := item.Version
 		if err := item.Transition(domain.Done, before, true, time.Now()); err != nil {
+			return domain.WorkItem{}, err
+		}
+		if err := dropActiveReviewer(ctx, tx, item); err != nil {
 			return domain.WorkItem{}, err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE qual.work_items

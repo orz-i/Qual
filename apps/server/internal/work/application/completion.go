@@ -21,7 +21,7 @@ func (s Service) Complete(ctx context.Context, actor identity.Actor, projectID, 
 	if decision.ExpectedVersion < 1 {
 		return domain.WorkItem{}, ErrPrecondition
 	}
-	project, err := s.Identity.AuthorizeProject(ctx, actor, projectID, idomain.WorkReview)
+	project, err := s.authorizeTaskProject(ctx, actor, projectID, idomain.WorkReview)
 	if err != nil {
 		return domain.WorkItem{}, err
 	}
