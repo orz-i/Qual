@@ -34,7 +34,7 @@ func (s Service) RecordRole(ctx context.Context, actor identity.Actor, projectID
 	case domain.Auditor:
 		permission = idomain.AuditRead
 	}
-	project, err := s.Identity.AuthorizeProject(ctx, actor, projectID, permission)
+	project, err := s.authorizeTaskProject(ctx, actor, projectID, permission)
 	if err != nil {
 		return domain.RoleEntry{}, err
 	}

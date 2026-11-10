@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	identity "qual/internal/identity/application"
+	idomain "qual/internal/identity/domain"
 	"qual/internal/work/application"
 	"qual/internal/work/domain"
 )
@@ -30,11 +31,18 @@ func updateTouched(ctx context.Context, tx pgx.Tx, w domain.WorkItem, oldVersion
 func (r Repository) AddComment(ctx context.Context, actor identity.Actor, project identity.Project,
 	itemID uuid.UUID, expected int64, body string, meta application.Meta, hash [32]byte) (domain.WorkItem, error) {
 	data, err := r.idempotent(ctx, actor, project, "comment", meta, hash, func(tx pgx.Tx) (domain.WorkItem, error) {
+		mode, err := r.lockTaskMode(ctx, tx, project)
+		if err != nil {
+			return domain.WorkItem{}, err
+		}
 		w, err := scanItem(tx.QueryRow(ctx, itemSelect+` WHERE w.project_id=$1 AND w.id=$2 FOR UPDATE OF w`, project.ID, itemID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.WorkItem{}, application.ErrNotFound
 		}
 		if err != nil {
+			return domain.WorkItem{}, err
+		}
+		if err := r.authorizeTaskWrite(ctx, tx, actor, project, mode, w, domain.TaskComment, idomain.WorkWrite, "", false); err != nil {
 			return domain.WorkItem{}, err
 		}
 		if err := domain.ValidateComment(body); err != nil {
@@ -69,9 +77,13 @@ func (r Repository) AddComment(ctx context.Context, actor identity.Actor, projec
 func (r Repository) LinkDependency(ctx context.Context, actor identity.Actor, project identity.Project,
 	fromID, toID uuid.UUID, expected int64, meta application.Meta, hash [32]byte) (domain.WorkItem, error) {
 	data, err := r.idempotent(ctx, actor, project, "link_dependency", meta, hash, func(tx pgx.Tx) (domain.WorkItem, error) {
+		mode, err := r.lockTaskMode(ctx, tx, project)
+		if err != nil {
+			return domain.WorkItem{}, err
+		}
 		// Serialize dependency graph mutations within the project to prevent
 		// two concurrent reverse links from both passing the cycle check.
-		_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text,0))`, project.ID)
+		_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text,0))`, project.ID)
 		if err != nil {
 			return domain.WorkItem{}, err
 		}
@@ -80,6 +92,9 @@ func (r Repository) LinkDependency(ctx context.Context, actor identity.Actor, pr
 			return domain.WorkItem{}, application.ErrNotFound
 		}
 		if err != nil {
+			return domain.WorkItem{}, err
+		}
+		if err := r.authorizeTaskWrite(ctx, tx, actor, project, mode, w, domain.TaskUpdate, idomain.WorkWrite, "", false); err != nil {
 			return domain.WorkItem{}, err
 		}
 		oldVersion := w.Version

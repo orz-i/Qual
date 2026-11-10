@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	identity "qual/internal/identity/application"
+	idomain "qual/internal/identity/domain"
 	"qual/internal/work/application"
 	"qual/internal/work/domain"
 )
@@ -55,6 +56,10 @@ func (r Repository) RecordRole(ctx context.Context, actor identity.Actor, projec
 		}
 		return saved, nil
 	}
+	mode, err := r.lockTaskMode(ctx, tx, project)
+	if err != nil {
+		return domain.RoleEntry{}, err
+	}
 	item, err := scanItem(tx.QueryRow(ctx, itemSelect+` WHERE w.project_id=$1 AND w.id=$2 FOR UPDATE OF w`, project.ID, itemID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.RoleEntry{}, application.ErrNotFound
@@ -63,6 +68,30 @@ func (r Repository) RecordRole(ctx context.Context, actor identity.Actor, projec
 		return domain.RoleEntry{}, err
 	}
 
+	action := domain.TaskAction("")
+	permission := idomain.WorkWrite
+	switch input.Capacity {
+	case domain.Executor:
+		action = domain.TaskRecordExecutor
+	case domain.Tester:
+		action, permission = domain.TaskRecordTester, idomain.TestWrite
+	case domain.Reviewer:
+		action, permission = domain.TaskRecordReview, idomain.WorkReview
+	case domain.Auditor:
+		permission = idomain.AuditRead // legacy has a separate work:write gate
+	}
+	if err := r.authorizeTaskWrite(ctx, tx, actor, project, mode, item, action, permission, "", false); err != nil {
+		return domain.RoleEntry{}, err
+	}
+	// A task-scoped RoleEntry may cite only evidence truly bound to this
+	// WorkItem. The historical test_case_coverage relation alone is NOT a
+	// grant: one TestCase may be shared by unrelated tasks.
+	if mode == domain.TaskScopedAuthorization {
+		if err := r.validateTaskRoleReference(ctx, tx, project, item,
+			input.ReferenceKind, input.ReferenceValue); err != nil {
+			return domain.RoleEntry{}, err
+		}
+	}
 	// Sources backed by Qual must exist within the same project. Git commit
 	// references are external and only syntax-checked, not attested by Qual.
 	if input.ReferenceKind == domain.TestRunReference || input.ReferenceKind == domain.ArtifactReference {
@@ -82,9 +111,12 @@ func (r Repository) RecordRole(ctx context.Context, actor identity.Actor, projec
 	if input.Capacity == domain.Reviewer {
 		selfReview = item.CreatedBy == actor.PrincipalID || (item.AssigneeID != nil && *item.AssigneeID == actor.PrincipalID)
 		if !selfReview {
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM qual.work_role_entries
-     WHERE project_id=$1 AND work_item_id=$2 AND actor_id=$3 AND capacity IN ('executor','tester'))`,
-				project.ID, itemID, actor.PrincipalID).Scan(&selfReview); err != nil {
+			// Includes immutable Claim/Reassign and task-bound test facts.
+			// A transferred prior executor may not become an independent
+			// reviewer by simply clearing their current assignee relation.
+			var err error
+			selfReview, err = wasTaskExecutor(ctx, tx, item, actor.PrincipalID)
+			if err != nil {
 				return domain.RoleEntry{}, err
 			}
 		}
