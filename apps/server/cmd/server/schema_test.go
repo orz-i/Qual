@@ -13,6 +13,14 @@ func TestSchemaCompatibilityFailsClosed(t *testing.T) {
 	g16.Version, g16.Applied16, g16.AgentRuns, g16.AgentRunReports = 16, true, true, true
 	g17 := g16
 	g17.Version, g17.Applied17, g17.ExternalEvents, g17.EventIndexes, g17.EventAppendOnly = 17, true, true, true, true
+	g18 := g17
+	g18.Version, g18.Applied18, g18.TaskPolicyTable, g18.TaskPolicyHistory, g18.TaskPolicyAppendOnly = 18, true, true, true, true
+	g19 := g18
+	g19.Version, g19.Applied19, g19.WorkReviewAssignments, g19.WorkReviewReviewerIndex = 19, true, true, true
+	g20 := g19
+	g20.Version, g20.Applied20, g20.BoundTestRunsColumn, g20.BoundTestRunsIndex, g20.BoundTestRunsImmutable = 20, true, true, true, true
+	g21 := g20
+	g21.Version, g21.Applied21, g21.HistoricLinkTable, g21.HistoricLinkIndex, g21.HistoricLinkImmutable = 21, true, true, true, true
 
 	cases := []struct {
 		name      string
@@ -40,7 +48,20 @@ func TestSchemaCompatibilityFailsClosed(t *testing.T) {
 		{"Goose17 missing one/both timeline indexes", schemaFacts{Version: 17, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventAppendOnly: true}, false},
 		{"Goose17 missing append-only trigger", schemaFacts{Version: 17, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true}, false},
 		{"Goose17 complete after Goose16", g17, true},
-		{"unknown future Goose18", schemaFacts{Version: 18}, false},
+		{"Goose18 missing policy ledger", schemaFacts{Version: 18, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true, EventAppendOnly: true}, false},
+		{"Goose18 missing append-only history", schemaFacts{Version: 18, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Applied18: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true, EventAppendOnly: true, TaskPolicyTable: true, TaskPolicyHistory: true}, false},
+		{"Goose18 complete after Goose17", g18, true},
+		{"Goose19 missing assignment table", schemaFacts{Version: 19, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Applied18: true, Applied19: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true, EventAppendOnly: true, TaskPolicyTable: true, TaskPolicyHistory: true, TaskPolicyAppendOnly: true}, false},
+		{"Goose19 missing reviewer index", schemaFacts{Version: 19, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Applied18: true, Applied19: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true, EventAppendOnly: true, TaskPolicyTable: true, TaskPolicyHistory: true, TaskPolicyAppendOnly: true, WorkReviewAssignments: true}, false},
+		{"Goose19 complete", g19, true},
+		{"Goose20 missing bound Run schema", schemaFacts{Version: 20, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Applied18: true, Applied19: true, Applied20: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true, EventAppendOnly: true, TaskPolicyTable: true, TaskPolicyHistory: true, TaskPolicyAppendOnly: true, WorkReviewAssignments: true, WorkReviewReviewerIndex: true}, false},
+		{"Goose20 missing immutable trigger", schemaFacts{Version: 20, Applied14: true, Applied15: true, Applied16: true, Applied17: true, Applied18: true, Applied19: true, Applied20: true, Threads: true, ThreadLinks: true, ContextIndexes: true, AgentRuns: true, AgentRunReports: true, ExternalEvents: true, EventIndexes: true, EventAppendOnly: true, TaskPolicyTable: true, TaskPolicyHistory: true, TaskPolicyAppendOnly: true, WorkReviewAssignments: true, WorkReviewReviewerIndex: true, BoundTestRunsColumn: true, BoundTestRunsIndex: true}, false},
+		{"Goose20 complete", g20, true},
+		{"Goose21 without attribution schema", schemaFacts{Version: 21, Applied21: true}, false},
+		{"Goose21 without immutable trigger", func() schemaFacts { incomplete := g21; incomplete.HistoricLinkImmutable = false; return incomplete }(), false},
+		{"Goose21 without index", func() schemaFacts { incomplete := g21; incomplete.HistoricLinkIndex = false; return incomplete }(), false},
+		{"Goose21 complete", g21, true},
+		{"unknown future Goose22", schemaFacts{Version: 22}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
