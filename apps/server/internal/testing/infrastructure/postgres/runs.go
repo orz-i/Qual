@@ -13,11 +13,17 @@ import (
 	identity "qual/internal/identity/application"
 	"qual/internal/testing/application"
 	"qual/internal/testing/domain"
+	workdomain "qual/internal/work/domain"
 )
 
 func (r Repository) GetRun(ctx context.Context, pid, rid uuid.UUID) (domain.TestRun, error) {
 	var run domain.TestRun
-	err := r.Pool.QueryRow(ctx, `SELECT id,project_id,name,source_system,COALESCE(external_run_key,''),
+	bound, err := r.RunWork(ctx, pid, rid)
+	if err != nil {
+		return run, err
+	}
+	run.WorkItemID = bound
+	err = r.Pool.QueryRow(ctx, `SELECT id,project_id,name,source_system,COALESCE(external_run_key,''),
  environment,build_ref,created_at FROM qual.test_runs WHERE project_id=$1 AND id=$2`, pid, rid).
 		Scan(&run.ID, &run.ProjectID, &run.Name, &run.SourceSystem, &run.ExternalRunKey, &run.Environment, &run.BuildRef, &run.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -86,6 +92,16 @@ func (r Repository) ListRuns(ctx context.Context, pid uuid.UUID) ([]domain.TestR
 }
 func (r Repository) CreateRun(ctx context.Context, actor identity.Actor, p identity.Project, in domain.RunInput, m application.Meta, h [32]byte) (domain.TestRun, error) {
 	body, err := r.idempotent(ctx, actor, p, "run.create", m, h, func(tx pgx.Tx) (any, error) {
+		if err := r.taskRunGuard(ctx, tx, actor, p, in.WorkItemID, workdomain.TaskReportTest); err != nil {
+			return nil, err
+		}
+		boundSchema, err := r.boundRunColumn(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		if in.WorkItemID != nil && !boundSchema {
+			return nil, domain.ErrValidation
+		}
 		if in.ExternalRunKey != "" {
 			var exists bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM qual.test_runs
@@ -99,11 +115,17 @@ func (r Repository) CreateRun(ctx context.Context, actor identity.Actor, p ident
 		}
 		run := domain.TestRun{ID: uuid.New(), ProjectID: p.ID, Name: strings.TrimSpace(in.Name),
 			SourceSystem: in.SourceSystem, ExternalRunKey: in.ExternalRunKey, Environment: in.Environment, BuildRef: in.BuildRef,
-			Items: make([]domain.RunItem, 0)}
-		if err := tx.QueryRow(ctx, `INSERT INTO qual.test_runs(id,project_id,name,source_principal_id,source_system,external_run_key,environment,build_ref)
+			WorkItemID: in.WorkItemID, Items: make([]domain.RunItem, 0)}
+		if boundSchema {
+			err = tx.QueryRow(ctx, `INSERT INTO qual.test_runs(id,project_id,name,source_principal_id,source_system,external_run_key,environment,build_ref,work_item_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING created_at`,
+				run.ID, p.ID, run.Name, actor.PrincipalID, run.SourceSystem, nilIfEmpty(run.ExternalRunKey), run.Environment, run.BuildRef, in.WorkItemID).Scan(&run.CreatedAt)
+		} else {
+			err = tx.QueryRow(ctx, `INSERT INTO qual.test_runs(id,project_id,name,source_principal_id,source_system,external_run_key,environment,build_ref)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING created_at`,
-			run.ID, p.ID, run.Name, actor.PrincipalID, run.SourceSystem, nilIfEmpty(run.ExternalRunKey), run.Environment, run.BuildRef).
-			Scan(&run.CreatedAt); err != nil {
+				run.ID, p.ID, run.Name, actor.PrincipalID, run.SourceSystem, nilIfEmpty(run.ExternalRunKey), run.Environment, run.BuildRef).Scan(&run.CreatedAt)
+		}
+		if err != nil {
 			return nil, err
 		}
 		seen := make(map[uuid.UUID]bool)
@@ -124,6 +146,11 @@ func (r Repository) CreateRun(ctx context.Context, actor identity.Actor, p ident
 			if seen[cID] {
 				return nil, domain.ErrValidation
 			}
+			if in.WorkItemID != nil {
+				if err := r.validateRunCoverage(ctx, tx, actor, p, m, *in.WorkItemID, cID); err != nil {
+					return nil, err
+				}
+			}
 			seen[cID] = true
 			item := domain.RunItem{ID: uuid.New(), TestCaseID: cID, TestCaseKey: key, CaseVersionID: vid, CaseVersion: version,
 				SnapshotSHA256: hex.EncodeToString(checksum), AttemptCount: 0}
@@ -134,7 +161,7 @@ func (r Repository) CreateRun(ctx context.Context, actor identity.Actor, p ident
 			}
 			run.Items = append(run.Items, item)
 		}
-		err := r.emit(ctx, tx, actor, p, m, "test_run.created", run.ID, nil, 1, map[string]any{"case_versions": len(run.Items), "source": in.SourceSystem})
+		err = r.emit(ctx, tx, actor, p, m, "test_run.created", run.ID, nil, 1, map[string]any{"case_versions": len(run.Items), "source": in.SourceSystem})
 		return run, err
 	})
 	if err != nil {
@@ -219,6 +246,13 @@ func (r Repository) insertAttempt(ctx context.Context, tx pgx.Tx, actor identity
 func (r Repository) RecordAttempt(ctx context.Context, actor identity.Actor, p identity.Project,
 	itemID uuid.UUID, in domain.AttemptInput, m application.Meta, h [32]byte) (domain.Attempt, error) {
 	body, err := r.idempotent(ctx, actor, p, "attempt.record", m, h, func(tx pgx.Tx) (any, error) {
+		workID, err := r.boundRunItemInTx(ctx, tx, p.ID, itemID)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.taskRunGuard(ctx, tx, actor, p, workID, workdomain.TaskReportTest); err != nil {
+			return nil, err
+		}
 		a, err := r.insertAttempt(ctx, tx, actor, p, itemID, in)
 		if err != nil {
 			return nil, err

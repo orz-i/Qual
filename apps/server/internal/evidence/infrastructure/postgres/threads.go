@@ -11,6 +11,9 @@ import (
 	"qual/internal/evidence/application"
 	"qual/internal/evidence/domain"
 	identity "qual/internal/identity/application"
+	idomain "qual/internal/identity/domain"
+	workdomain "qual/internal/work/domain"
+	workpg "qual/internal/work/infrastructure/postgres"
 )
 
 func lockThreadWorkItem(ctx context.Context, tx pgx.Tx, projectID, itemID uuid.UUID, expected int64) (int64, error) {
@@ -102,6 +105,9 @@ func threadWriteError(err error) error {
 func (r Repository) LinkThread(ctx context.Context, actor identity.Actor, project identity.Project,
 	itemID uuid.UUID, in domain.ThreadLinkInput, meta application.Meta, hash [32]byte) (domain.ThreadMutation, error) {
 	body, err := r.idempotent(ctx, actor, project, "work_thread.link", meta, hash, func(tx pgx.Tx) (any, error) {
+		if err := (workpg.Repository{Pool: r.Pool}).AuthorizeTaskResource(ctx, tx, actor, project, itemID, workdomain.TaskUpdate, idomain.WorkWrite); err != nil {
+			return nil, err
+		}
 		prior, err := lockThreadWorkItem(ctx, tx, project.ID, itemID, in.ExpectedVersion)
 		if err != nil {
 			return nil, err
@@ -157,6 +163,9 @@ func (r Repository) LinkThread(ctx context.Context, actor identity.Actor, projec
 func (r Repository) UnlinkThread(ctx context.Context, actor identity.Actor, project identity.Project,
 	itemID, threadID uuid.UUID, expected int64, meta application.Meta, hash [32]byte) (domain.ThreadMutation, error) {
 	body, err := r.idempotent(ctx, actor, project, "work_thread.unlink", meta, hash, func(tx pgx.Tx) (any, error) {
+		if err := (workpg.Repository{Pool: r.Pool}).AuthorizeTaskResource(ctx, tx, actor, project, itemID, workdomain.TaskUpdate, idomain.WorkWrite); err != nil {
+			return nil, err
+		}
 		prior, err := lockThreadWorkItem(ctx, tx, project.ID, itemID, expected)
 		if err != nil {
 			return nil, err

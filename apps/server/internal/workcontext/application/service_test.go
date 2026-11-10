@@ -53,6 +53,13 @@ func (w *fakeWork) ReadAcceptanceHistory(context.Context, identity.Actor, uuid.U
 	return w.history, nil
 }
 
+func (r *fakePages) TaskMode(context.Context, uuid.UUID) (domain.TaskAuthorizationMode, error) {
+	return domain.LegacyAuthorization, nil
+}
+func (r *fakePages) AuthorizeTaskContextRead(context.Context, identity.Actor, identity.Project, uuid.UUID, Section) error {
+	return nil
+}
+
 type fakePages struct {
 	pages map[Section][]json.RawMessage
 	calls []Section
@@ -97,6 +104,42 @@ func sampleService() (Service, *fakeAuth, *fakeWork, *fakePages, uuid.UUID, uuid
 	r := &fakePages{pages: map[Section][]json.RawMessage{}}
 	return Service{Identity: a, Work: w, Reader: r,
 		Clock: func() time.Time { return time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC) }}, a, w, r, p, i
+}
+
+func TestTaskContextCarriesAuthoritativeExecutableDescriptionAndAcceptance(t *testing.T) {
+	s, _, w, _, projectID, itemID := sampleService()
+	w.item.Description = "用户入口：项目→任务。执行：qual show -item QUAL-67；验收：拒绝403，刷新后持久化。"
+	w.item.AcceptanceCriteria = []string{"中文用户路径和权限检查必须可观察", "每次实际测试引用不可变证据，不推断 AgentRun 通过"}
+	for _, section := range []Section{Overview, Comments} {
+		page, err := s.Get(context.Background(), identity.Actor{}, projectID, itemID, Input{Section: section})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.SchemaVersion != 2 || page.ContextRevision != 5 || page.WorkItem.Description != w.item.Description ||
+			len(page.WorkItem.AcceptanceCriteria) != 2 || page.WorkItem.AcceptanceCriteria[0] != w.item.AcceptanceCriteria[0] {
+			t.Fatalf("Task contract lost in %s: %+v", section, page.WorkItem)
+		}
+		page.WorkItem.AcceptanceCriteria[0] = "mutated local copy"
+		if w.item.AcceptanceCriteria[0] != "中文用户路径和权限检查必须可观察" {
+			t.Fatal("Summary aliases authoritative WorkItem acceptance slice")
+		}
+	}
+	w.item.AcceptanceCriteria = nil
+	page, err := s.Get(context.Background(), identity.Actor{}, projectID, itemID, Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(page.WorkItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if json.Unmarshal(payload, &decoded) != nil || decoded["description"] != w.item.Description {
+		t.Fatal("lost source fields")
+	}
+	if values, ok := decoded["acceptance_criteria"].([]any); !ok || len(values) != 0 {
+		t.Fatalf("expected [] acceptance_criteria, got %v", decoded["acceptance_criteria"])
+	}
 }
 
 func TestOverviewIsBoundedAndNoAutomaticApproval(t *testing.T) {

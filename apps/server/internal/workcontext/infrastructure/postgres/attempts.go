@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	identity "qual/internal/identity/application"
+	workdomain "qual/internal/work/domain"
 	contextapp "qual/internal/workcontext/application"
 )
 
@@ -29,6 +31,23 @@ const narrowCountSQL = `
   JOIN qual.test_run_items ri ON ri.project_id=cv.project_id AND ri.test_case_id=cv.test_case_id
   WHERE cv.project_id=$1 AND cv.work_item_id=$2 LIMIT $3
  ) t`
+
+// In task_scoped mode a shared Case coverage edge is NOT enough to read
+// an Attempt. Only frozen Goose20 TestRuns explicitly owned by this WorkItem
+// contribute to its private context, with keyset pagination.
+const scopedAttemptSQL = `
+ SELECT jsonb_build_object(
+  'source','test_attempts','source_id',a.id,
+  'run_id',r.id,'run_item_id',ri.id,
+  'test_case_id',ri.test_case_id,'test_case_version_id',ri.test_case_version_id,
+  'attempt_no',a.attempt_no,'status',a.status,'source_kind',a.source_kind,
+  'observed_at',a.observed_at,'ingested_at',a.ingested_at,'excerpt',left(a.note,240))
+ FROM qual.test_runs r
+ JOIN qual.test_run_items ri ON ri.project_id=r.project_id AND ri.run_id=r.id
+ JOIN qual.test_attempts a ON a.project_id=ri.project_id AND a.run_item_id=ri.id
+ WHERE r.project_id=$1 AND r.work_item_id=$2
+   AND ($4::timestamptz IS NULL OR (a.ingested_at,a.id)<($4::timestamptz,$5::uuid))
+ ORDER BY a.ingested_at DESC,a.id DESC LIMIT $3`
 
 // With <=32 RunItems, the per-RunItem index gives bounded local scans, and
 // the global sort includes every qualifying source before LIMIT is applied.
@@ -84,6 +103,26 @@ const candidateAttemptSQL = `
  ORDER BY a.ingested_at DESC,a.id DESC`
 
 func (r Repository) attemptPage(ctx context.Context, project, item uuid.UUID, q contextapp.PageQuery) ([]json.RawMessage, error) {
+	mode, err := r.TaskMode(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	if mode == workdomain.TaskScopedAuthorization {
+		var ready bool
+		if err := r.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns
+			WHERE table_schema='qual' AND table_name='test_runs' AND column_name='work_item_id')`).Scan(&ready); err != nil {
+			return nil, err
+		}
+		if !ready {
+			return nil, identity.ErrForbidden
+		}
+		rows, err := r.Pool.Query(ctx, scopedAttemptSQL, project, item, q.Limit, q.BeforeTime, q.BeforeID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanFacts(rows, q.Limit)
+	}
 	var matchedRunItems int
 	if err := r.Pool.QueryRow(ctx, narrowCountSQL, project, item, narrowRunItemCeiling+1).Scan(&matchedRunItems); err != nil {
 		return nil, err

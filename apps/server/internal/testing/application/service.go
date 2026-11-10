@@ -12,6 +12,7 @@ import (
 	identity "qual/internal/identity/application"
 	idomain "qual/internal/identity/domain"
 	"qual/internal/testing/domain"
+	workdomain "qual/internal/work/domain"
 )
 
 var (
@@ -66,6 +67,11 @@ type Repository interface {
 	AttemptDefects(context.Context, uuid.UUID, uuid.UUID) ([]domain.AttemptDefect, error)
 	LinkDefect(context.Context, identity.Actor, identity.Project, uuid.UUID, domain.BugLinkInput, Meta, [32]byte) (domain.BugLink, error)
 	ImportJUnit(context.Context, identity.Actor, identity.Project, uuid.UUID, JUnitInput, []domain.ReportCase, Meta, [32]byte) (domain.ImportSummary, error)
+	TaskMode(context.Context, uuid.UUID) (workdomain.TaskAuthorizationMode, error)
+	RunWork(context.Context, uuid.UUID, uuid.UUID) (*uuid.UUID, error)
+	RunItemWork(context.Context, uuid.UUID, uuid.UUID) (*uuid.UUID, error)
+	AttemptWork(context.Context, uuid.UUID, uuid.UUID) (*uuid.UUID, error)
+	AuthorizeTaskTestRead(context.Context, identity.Actor, identity.Project, *uuid.UUID) error
 }
 
 type Service struct {
@@ -89,6 +95,52 @@ func hashCommand(op string, v any) [32]byte {
 func (s Service) project(ctx context.Context, actor identity.Actor, projectID uuid.UUID, p idomain.Permission) (identity.Project, error) {
 	return s.Identity.AuthorizeProject(ctx, actor, projectID, p)
 }
+
+// taskProject is a coarse preflight: the final privilege/relationship gate
+// runs in PostgreSQL under the same transaction as the immutable fact.
+func (s Service) taskProject(ctx context.Context, actor identity.Actor, pid uuid.UUID,
+	workID *uuid.UUID, permission idomain.Permission) (identity.Project, error) {
+	mode, err := s.Tests.TaskMode(ctx, pid)
+	if err != nil {
+		return identity.Project{}, err
+	}
+	if mode == workdomain.TaskScopedAuthorization && actor.Type != idomain.Integration {
+		if workID != nil {
+			p, err := s.project(ctx, actor, pid, idomain.WorkRead)
+			if err != nil {
+				return identity.Project{}, err
+			}
+			if _, err := s.project(ctx, actor, pid, idomain.WorkClaim); err != nil {
+				return identity.Project{}, err
+			}
+			return p, nil
+		}
+		if _, err := s.project(ctx, actor, pid, idomain.AccessManage); err != nil {
+			return identity.Project{}, err
+		}
+	}
+	return s.project(ctx, actor, pid, permission)
+}
+
+func (s Service) taskRead(ctx context.Context, actor identity.Actor, pid uuid.UUID,
+	workID *uuid.UUID) (identity.Project, error) {
+	mode, err := s.Tests.TaskMode(ctx, pid)
+	if err != nil {
+		return identity.Project{}, err
+	}
+	if mode == workdomain.TaskScopedAuthorization && actor.Type != idomain.Integration && workID != nil {
+		p, err := s.project(ctx, actor, pid, idomain.WorkRead)
+		if err != nil {
+			return identity.Project{}, err
+		}
+		if _, err := s.project(ctx, actor, pid, idomain.WorkClaim); err != nil {
+			return identity.Project{}, err
+		}
+		return p, nil
+	}
+	return s.taskProject(ctx, actor, pid, nil, idomain.TestRead)
+}
+
 func canManageCases(actor identity.Actor) error {
 	if actor.Type == idomain.Integration {
 		return identity.ErrForbidden
@@ -198,7 +250,7 @@ func (s Service) LinkCoverage(ctx context.Context, actor identity.Actor, pid, ci
 	if err := canManageCases(actor); err != nil {
 		return domain.TestCase{}, err
 	}
-	p, err := s.project(ctx, actor, pid, idomain.TestWrite)
+	p, err := s.taskProject(ctx, actor, pid, &wid, idomain.TestWrite)
 	if err != nil {
 		return domain.TestCase{}, err
 	}
@@ -217,20 +269,34 @@ func (s Service) CreateRun(ctx context.Context, actor identity.Actor, pid uuid.U
 	if err := in.Validate(); err != nil {
 		return domain.TestRun{}, err
 	}
-	p, err := s.project(ctx, actor, pid, idomain.TestWrite)
+	p, err := s.taskProject(ctx, actor, pid, in.WorkItemID, idomain.TestWrite)
 	if err != nil {
 		return domain.TestRun{}, err
 	}
 	return s.Tests.CreateRun(ctx, actor, p, in, m, hashCommand("run.create", in))
 }
 func (s Service) GetRun(ctx context.Context, actor identity.Actor, pid, rid uuid.UUID) (domain.TestRun, error) {
-	if _, err := s.project(ctx, actor, pid, idomain.TestRead); err != nil {
+	workID, err := s.Tests.RunWork(ctx, pid, rid)
+	if err != nil {
+		return domain.TestRun{}, err
+	}
+	project, err := s.taskRead(ctx, actor, pid, workID)
+	if err != nil {
+		return domain.TestRun{}, err
+	}
+	if err := s.Tests.AuthorizeTaskTestRead(ctx, actor, project, workID); err != nil {
 		return domain.TestRun{}, err
 	}
 	return s.Tests.GetRun(ctx, pid, rid)
 }
 func (s Service) ListRuns(ctx context.Context, actor identity.Actor, pid uuid.UUID) ([]domain.TestRun, error) {
-	if _, err := s.project(ctx, actor, pid, idomain.TestRead); err != nil {
+	// Global listing in scoped mode requires real project management. To
+	// inspect task-bound results agents use WorkItem context and GetRun.
+	p, err := s.taskRead(ctx, actor, pid, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Tests.AuthorizeTaskTestRead(ctx, actor, p, nil); err != nil {
 		return nil, err
 	}
 	return s.Tests.ListRuns(ctx, pid)
@@ -245,7 +311,11 @@ func (s Service) RecordAttempt(ctx context.Context, actor identity.Actor, pid, i
 	if err := in.Validate(); err != nil {
 		return domain.Attempt{}, err
 	}
-	p, err := s.project(ctx, actor, pid, idomain.TestWrite)
+	workID, err := s.Tests.RunItemWork(ctx, pid, itemID)
+	if err != nil {
+		return domain.Attempt{}, err
+	}
+	p, err := s.taskProject(ctx, actor, pid, workID, idomain.TestWrite)
 	if err != nil {
 		return domain.Attempt{}, err
 	}
@@ -255,7 +325,15 @@ func (s Service) RecordAttempt(ctx context.Context, actor identity.Actor, pid, i
 	}{itemID, in}))
 }
 func (s Service) Attempts(ctx context.Context, actor identity.Actor, pid, itemID uuid.UUID) ([]domain.Attempt, error) {
-	if _, err := s.project(ctx, actor, pid, idomain.TestRead); err != nil {
+	workID, err := s.Tests.RunItemWork(ctx, pid, itemID)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.taskRead(ctx, actor, pid, workID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Tests.AuthorizeTaskTestRead(ctx, actor, p, workID); err != nil {
 		return nil, err
 	}
 	return s.Tests.Attempts(ctx, pid, itemID)
@@ -263,7 +341,15 @@ func (s Service) Attempts(ctx context.Context, actor identity.Actor, pid, itemID
 
 // AttemptDefects is scoped to TestRead and reads only already linked failures.
 func (s Service) AttemptDefects(ctx context.Context, actor identity.Actor, pid, attemptID uuid.UUID) ([]domain.AttemptDefect, error) {
-	if _, err := s.project(ctx, actor, pid, idomain.TestRead); err != nil {
+	workID, err := s.Tests.AttemptWork(ctx, pid, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.taskRead(ctx, actor, pid, workID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Tests.AuthorizeTaskTestRead(ctx, actor, p, workID); err != nil {
 		return nil, err
 	}
 	return s.Tests.AttemptDefects(ctx, pid, attemptID)
@@ -305,7 +391,11 @@ func (s Service) ImportJUnit(ctx context.Context, actor identity.Actor, pid, rid
 	if err != nil {
 		return domain.ImportSummary{}, err
 	}
-	p, err := s.project(ctx, actor, pid, idomain.TestWrite)
+	workID, err := s.Tests.RunWork(ctx, pid, rid)
+	if err != nil {
+		return domain.ImportSummary{}, err
+	}
+	p, err := s.taskProject(ctx, actor, pid, workID, idomain.TestWrite)
 	if err != nil {
 		return domain.ImportSummary{}, err
 	}
