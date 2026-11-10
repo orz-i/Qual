@@ -205,6 +205,71 @@ func (w *WorkItem) Claim(principalID uuid.UUID, expected int64, now time.Time) e
 	return nil
 }
 
+// ClaimResumed permits a new eligible participant to continue an explicitly
+// released in_progress WorkItem in task_scoped mode. The existing Claim method
+// remains unchanged for legacy projects and backlog/todo transitions.
+func (w *WorkItem) ClaimResumed(principalID uuid.UUID, expected int64, now time.Time) error {
+	if w.Version != expected {
+		return ErrConflict
+	}
+	if principalID == uuid.Nil {
+		return ErrValidation
+	}
+	if w.AssigneeID != nil {
+		return ErrClaimed
+	}
+	if w.Status != InProgress {
+		return ErrTransition
+	}
+	w.AssigneeID = &principalID
+	w.Version++
+	w.UpdatedAt = now.UTC()
+	return nil
+}
+
+// Release detaches the current executor without rewriting any of their
+// immutable audit/test history. Who may release is checked by the server.
+func (w *WorkItem) Release(expected int64, now time.Time) error {
+	if w.Version != expected {
+		return ErrConflict
+	}
+	if w.Status != Backlog && w.Status != Todo && w.Status != InProgress {
+		return ErrTransition
+	}
+	if w.AssigneeID == nil {
+		return ErrTransition
+	}
+	w.AssigneeID = nil
+	w.Version++
+	w.UpdatedAt = now.UTC()
+	return nil
+}
+
+// Reassign requires an existing assignee except for explicit manager recovery
+// of an unassigned in_progress task. The server verifies both the initiating
+// actor's eligibility/manager privilege and the receiving Principal's scope.
+func (w *WorkItem) Reassign(principalID uuid.UUID, expected int64, now time.Time) error {
+	if w.Version != expected {
+		return ErrConflict
+	}
+	if principalID == uuid.Nil {
+		return ErrValidation
+	}
+	if w.Status != Backlog && w.Status != Todo && w.Status != InProgress {
+		return ErrTransition
+	}
+	if w.AssigneeID == nil && w.Status != InProgress {
+		return ErrTransition
+	}
+	if w.AssigneeID != nil && *w.AssigneeID == principalID {
+		return ErrValidation
+	}
+	w.AssigneeID = &principalID
+	w.Version++
+	w.UpdatedAt = now.UTC()
+	return nil
+}
+
 var allowed = map[Status][]Status{
 	Backlog:    {Todo, Cancelled},
 	Todo:       {InProgress, Cancelled},
