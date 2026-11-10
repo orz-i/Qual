@@ -1030,6 +1030,9 @@ export interface paths {
          *     hard limited; exhaustion is explicit 503 CONTEXT_QUERY_BUDGET, not
          *     an apparently successful truncated page. Historical cross-domain
          *     changes still require source revalidation.
+         *     Historical_attributions is a separate TestRead-protected section of
+         *     Goose21 source IDs and attribution provenance, not the old Attempt
+         *     body/status and never a grant to read an unbound historical Run.
          *     This endpoint never infers Passed/Done or starts an Agent.
          */
         get: operations["getWorkItemContext"];
@@ -1976,6 +1979,26 @@ export interface components {
             ingested_at: string;
             excerpt: string;
         };
+        /**
+         * @description Goose21 append-only legacy Run provenance only. The historic Run is
+         *     NOT task-bound and this fact grants no TestRun/Attempt/Artifact access.
+         *     source_id is the real original TestRun UUID (the attribution table has
+         *     a composite project/run PK), not a fabricated attribution UUID.
+         */
+        WorkContextHistoricalAttributionFact: {
+            /** @constant */
+            source: "historical_test_run_attributions";
+            /** Format: uuid */
+            source_id: string;
+            /** Format: uuid */
+            run_id: string;
+            /** @constant */
+            attribution_kind: "unique_explicit_historical_reference";
+            role_entry_ids: string[];
+            acceptance_ids: string[];
+            /** Format: date-time */
+            recorded_at: string;
+        };
         WorkContextArtifactFact: {
             /** @constant */
             source: "artifacts";
@@ -2007,7 +2030,7 @@ export interface components {
          *     composite-link tables use source_key plus their real foreign IDs.
          *     Context does not confer audit, test or artifact permissions.
          */
-        WorkContextFact: components["schemas"]["WorkContextDependencyFact"] | components["schemas"]["WorkContextCommentFact"] | components["schemas"]["WorkContextReviewFact"] | components["schemas"]["WorkContextCoverageFact"] | components["schemas"]["WorkContextAttemptFact"] | components["schemas"]["WorkContextArtifactFact"] | components["schemas"]["WorkContextExternalReferenceFact"];
+        WorkContextFact: components["schemas"]["WorkContextDependencyFact"] | components["schemas"]["WorkContextCommentFact"] | components["schemas"]["WorkContextReviewFact"] | components["schemas"]["WorkContextCoverageFact"] | components["schemas"]["WorkContextAttemptFact"] | components["schemas"]["WorkContextHistoricalAttributionFact"] | components["schemas"]["WorkContextArtifactFact"] | components["schemas"]["WorkContextExternalReferenceFact"];
         /**
          * @description Exact server-domain action identifier, not a permission token
          * @enum {string}
@@ -2047,7 +2070,7 @@ export interface components {
             consistency: "best_effort";
             work_item: components["schemas"]["WorkContextSummary"];
             /** @enum {string} */
-            section: "overview" | "dependencies" | "comments" | "reviews" | "acceptance" | "coverage" | "attempts" | "artifacts" | "references";
+            section: "overview" | "dependencies" | "comments" | "reviews" | "acceptance" | "coverage" | "attempts" | "historical_attributions" | "artifacts" | "references";
             items: (components["schemas"]["WorkContextFact"] | components["schemas"]["WorkAcceptanceHistory"])[];
             has_more: boolean;
             /** @description True when deeper rows exist but the bounded per-query pagination history ceiling has been reached */
@@ -4814,7 +4837,7 @@ export interface operations {
     getWorkItemContext: {
         parameters: {
             query?: {
-                section?: "overview" | "dependencies" | "comments" | "reviews" | "acceptance" | "coverage" | "attempts" | "artifacts" | "references";
+                section?: "overview" | "dependencies" | "comments" | "reviews" | "acceptance" | "coverage" | "attempts" | "historical_attributions" | "artifacts" | "references";
                 limit?: number;
                 /** @description Opaque section/Project/WorkItem/version-specific cursor; Attempt pages carry a stable server-ingested keyset anchor */
                 cursor?: string;

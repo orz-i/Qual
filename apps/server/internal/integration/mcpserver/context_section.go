@@ -14,7 +14,7 @@ func contextSectionQuery(section string, limit int, cursor string) (url.Values, 
 	}
 	switch section {
 	case "overview", "dependencies", "comments", "reviews", "acceptance",
-		"coverage", "attempts", "artifacts", "references":
+		"coverage", "attempts", "historical_attributions", "artifacts", "references":
 	default:
 		return nil, errors.New("VALIDATION_ERROR")
 	}

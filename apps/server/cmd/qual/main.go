@@ -196,7 +196,7 @@ func run(args []string) error {
 	version := fs.Int64("version", 0, "expected work item version")
 	limit := fs.Int("limit", 30, "list page size")
 	offset := fs.Int("offset", 0, "review queue offset (non-snapshot pagination)")
-	section := fs.String("section", "overview", "context section: overview|dependencies|comments|reviews|acceptance|coverage|attempts|artifacts|references")
+	section := fs.String("section", "overview", "context section: overview|dependencies|comments|reviews|acceptance|coverage|attempts|historical_attributions|artifacts|references")
 	cursor := fs.String("cursor", "", "opaque WorkItem context page cursor")
 	requestKey := fs.String("request-key", "", "idempotency key; generated randomly if not supplied")
 	mode := fs.String("mode", "", "independent_review|owner_acceptance")

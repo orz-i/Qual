@@ -64,9 +64,14 @@ func (r *fakePages) AuthorizeTaskContextRead(context.Context, identity.Actor, id
 }
 
 type fakePages struct {
-	pages map[Section][]json.RawMessage
-	calls []Section
-	mode  domain.TaskAuthorizationMode
+	pages               map[Section][]json.RawMessage
+	calls               []Section
+	mode                domain.TaskAuthorizationMode
+	historicalAvailable bool
+}
+
+func (r *fakePages) HasHistoricalAttributions(context.Context) (bool, error) {
+	return r.historicalAvailable, nil
 }
 
 func (r *fakePages) Page(_ context.Context, _, _ uuid.UUID, s Section, q PageQuery) ([]json.RawMessage, error) {
@@ -325,5 +330,56 @@ func TestLegacyContextOverviewSkipsScopedCapabilitiesEvenWhenWorkSupportsThem(t 
 	scoped, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: Overview})
 	if err != nil || scoped.Capabilities == nil || scoped.Capabilities.WorkVersion != w.item.Version || capable.calls != 1 {
 		t.Fatalf("task-scoped context lost capabilities: %v, calls=%d, page=%+v", err, capable.calls, scoped)
+	}
+}
+
+// The historic provenance section is not an Attempt and is gated by TestRead.
+func TestHistoricalAttributionContextIsTestReadProtectedAndPaginated(t *testing.T) {
+	s, auth, _, pages, project, item := sampleService()
+	const legacy = `{"source":"historical_test_run_attributions","source_id":"9e108fc9-74c9-4090-8709-93cb1a16b69d","run_id":"9e108fc9-74c9-4090-8709-93cb1a16b69d","attribution_kind":"unique_explicit_historical_reference","role_entry_ids":[],"acceptance_ids":[],"recorded_at":"2026-11-07T01:00:00Z"}`
+	pages.historicalAvailable = true
+	pages.pages[HistoricalAttributions] = []json.RawMessage{json.RawMessage(legacy), json.RawMessage(legacy)}
+	auth.denied[permission.TestRead] = true
+	if _, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: HistoricalAttributions, Limit: 1}); !errors.Is(err, identity.ErrForbidden) {
+		t.Fatalf("not a test-scoped read denial: %v", err)
+	}
+	if len(pages.calls) != 0 {
+		t.Fatalf("queried historical provenance before authorization: %v", pages.calls)
+	}
+	delete(auth.denied, permission.TestRead)
+	page, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: HistoricalAttributions, Limit: 1})
+	if err != nil || len(page.Items) != 1 || !page.HasMore || page.NextCursor == "" {
+		t.Fatalf("bounded historical index %v: %+v", err, page)
+	}
+	var fact map[string]any
+	if err := json.Unmarshal(page.Items[0], &fact); err != nil || fact["source"] != "historical_test_run_attributions" || fact["status"] != nil {
+		t.Fatalf("historical index is not a fabricated Attempt: %v %v", err, fact)
+	}
+	page2, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: HistoricalAttributions, Cursor: page.NextCursor, Limit: 1})
+	if err != nil || len(page2.Items) != 1 || page2.HasMore {
+		t.Fatalf("historic next page %v: %+v", err, page2)
+	}
+}
+
+// Goose17/20 do not carry the Goose21 source table. Do not advertise a
+// nonexistent section to CLI Resume and never turn table absence into a
+// successful empty historical provenance result.
+func TestHistoricalAttributionNeverAdvertisedBeforeSchema21(t *testing.T) {
+	s, _, _, pages, project, item := sampleService()
+	overview, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{})
+	if err != nil || len(overview.AvailableSections) != 8 {
+		t.Fatalf("legacy sections: %v %+v", err, overview.AvailableSections)
+	}
+	for _, section := range overview.AvailableSections {
+		if section == HistoricalAttributions {
+			t.Fatal("legacy advertised a nonexistent Goose21 table")
+		}
+	}
+	pages.calls = nil
+	if _, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: HistoricalAttributions}); !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("absent Goose21 table not refused: %v", err)
+	}
+	if len(pages.calls) != 0 {
+		t.Fatalf("queried absent Goose21 table: %v", pages.calls)
 	}
 }

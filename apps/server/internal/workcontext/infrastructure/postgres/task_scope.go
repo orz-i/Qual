@@ -22,7 +22,7 @@ func (r Repository) AuthorizeTaskContextRead(ctx context.Context, actor identity
 	project identity.Project, workID uuid.UUID, section contextapp.Section) error {
 	action := workdomain.TaskReadEvidence
 	legacy := idomain.ArtifactRead
-	if section == contextapp.Attempts || section == contextapp.Coverage {
+	if section == contextapp.Attempts || section == contextapp.Coverage || section == contextapp.HistoricalAttributions {
 		action = workdomain.TaskReadTest
 		legacy = idomain.TestRead
 	}

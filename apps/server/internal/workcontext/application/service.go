@@ -26,18 +26,19 @@ var (
 type Section string
 
 const (
-	Overview     Section = "overview"
-	Dependencies Section = "dependencies"
-	Comments     Section = "comments"
-	Reviews      Section = "reviews"
-	Acceptance   Section = "acceptance"
-	Coverage     Section = "coverage"
-	Attempts     Section = "attempts"
-	Artifacts    Section = "artifacts"
-	References   Section = "references"
+	Overview               Section = "overview"
+	Dependencies           Section = "dependencies"
+	Comments               Section = "comments"
+	Reviews                Section = "reviews"
+	Acceptance             Section = "acceptance"
+	Coverage               Section = "coverage"
+	Attempts               Section = "attempts"
+	HistoricalAttributions Section = "historical_attributions"
+	Artifacts              Section = "artifacts"
+	References             Section = "references"
 )
 
-var sections = []Section{Dependencies, Comments, Reviews, Acceptance, Coverage, Attempts, Artifacts, References}
+var sections = []Section{Dependencies, Comments, Reviews, Acceptance, Coverage, Attempts, HistoricalAttributions, Artifacts, References}
 
 func validSection(s Section) bool {
 	if s == Overview {
@@ -180,7 +181,7 @@ func (s Service) Get(ctx context.Context, actor identity.Actor, projectID, itemI
 	}
 	permission := permissions.WorkRead
 	switch in.Section {
-	case Coverage, Attempts:
+	case Coverage, Attempts, HistoricalAttributions:
 		permission = permissions.TestRead
 	case Artifacts:
 		permission = permissions.ArtifactRead
@@ -207,6 +208,24 @@ func (s Service) Get(ctx context.Context, actor identity.Actor, projectID, itemI
 	} else {
 		if _, err := s.Identity.AuthorizeProject(ctx, actor, projectID, permission); err != nil {
 			return Page{}, err
+		}
+	}
+
+	// Advertise the Goose21 provenance section only when its actual source
+	// table exists. The older Goose17/Goose20 Task Context and CLI Resume must
+	// never try to query an absent table or infer there is no old evidence.
+	availableHistory := false
+	if in.Section == Overview || in.Section == HistoricalAttributions {
+		if reader, ok := s.Reader.(interface {
+			HasHistoricalAttributions(context.Context) (bool, error)
+		}); ok {
+			availableHistory, err = reader.HasHistoricalAttributions(ctx)
+			if err != nil {
+				return Page{}, err
+			}
+		}
+		if in.Section == HistoricalAttributions && !availableHistory {
+			return Page{}, ErrInvalidQuery
 		}
 	}
 
@@ -259,7 +278,11 @@ func (s Service) Get(ctx context.Context, actor identity.Actor, projectID, itemI
 			}
 			result.Capabilities = &caps
 		}
-		result.AvailableSections = append([]Section{}, sections...)
+		for _, section := range sections {
+			if section != HistoricalAttributions || availableHistory {
+				result.AvailableSections = append(result.AvailableSections, section)
+			}
+		}
 		reviews, err := s.Reader.Page(ctx, projectID, itemID, Reviews, PageQuery{Limit: 1})
 		if err != nil {
 			return Page{}, err

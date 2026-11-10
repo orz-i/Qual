@@ -1884,6 +1884,9 @@ paths:
         hard limited; exhaustion is explicit 503 CONTEXT_QUERY_BUDGET, not
         an apparently successful truncated page. Historical cross-domain
         changes still require source revalidation.
+        Historical_attributions is a separate TestRead-protected section of
+        Goose21 source IDs and attribution provenance, not the old Attempt
+        body/status and never a grant to read an unbound historical Run.
         This endpoint never infers Passed/Done or starts an Agent.
       parameters:
         - name: section
@@ -1892,7 +1895,7 @@ paths:
           schema:
             type: string
             default: overview
-            enum: [overview, dependencies, comments, reviews, acceptance, coverage, attempts, artifacts, references]
+            enum: [overview, dependencies, comments, reviews, acceptance, coverage, attempts, historical_attributions, artifacts, references]
         - name: limit
           in: query
           schema: {type: integer, minimum: 1, maximum: 100, default: 20}
@@ -3386,6 +3389,28 @@ components:
         observed_at: {type: string, format: date-time}
         ingested_at: {type: string, format: date-time}
         excerpt: {type: string, maxLength: 240}
+    WorkContextHistoricalAttributionFact:
+      type: object
+      additionalProperties: false
+      description: |
+        Goose21 append-only legacy Run provenance only. The historic Run is
+        NOT task-bound and this fact grants no TestRun/Attempt/Artifact access.
+        source_id is the real original TestRun UUID (the attribution table has
+        a composite project/run PK), not a fabricated attribution UUID.
+      required: [source, source_id, run_id, attribution_kind, role_entry_ids,
+        acceptance_ids, recorded_at]
+      properties:
+        source: {type: string, const: historical_test_run_attributions}
+        source_id: {type: string, format: uuid}
+        run_id: {type: string, format: uuid}
+        attribution_kind: {type: string, const: unique_explicit_historical_reference}
+        role_entry_ids:
+          type: array
+          items: {type: string, format: uuid}
+        acceptance_ids:
+          type: array
+          items: {type: string, format: uuid}
+        recorded_at: {type: string, format: date-time}
     WorkContextArtifactFact:
       type: object
       additionalProperties: false
@@ -3421,6 +3446,7 @@ components:
         - $ref: '#/components/schemas/WorkContextReviewFact'
         - $ref: '#/components/schemas/WorkContextCoverageFact'
         - $ref: '#/components/schemas/WorkContextAttemptFact'
+        - $ref: '#/components/schemas/WorkContextHistoricalAttributionFact'
         - $ref: '#/components/schemas/WorkContextArtifactFact'
         - $ref: '#/components/schemas/WorkContextExternalReferenceFact'
     TaskAction:
@@ -3480,7 +3506,7 @@ components:
         work_item: {$ref: '#/components/schemas/WorkContextSummary'}
         section:
           type: string
-          enum: [overview, dependencies, comments, reviews, acceptance, coverage, attempts, artifacts, references]
+          enum: [overview, dependencies, comments, reviews, acceptance, coverage, attempts, historical_attributions, artifacts, references]
         items:
           type: array
           maxItems: 100

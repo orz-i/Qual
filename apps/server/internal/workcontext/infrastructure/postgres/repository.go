@@ -17,6 +17,18 @@ type Repository struct {
 	Pool *pgxpool.Pool
 }
 
+// Only a genuinely installed Goose21 attribution source may be advertised
+// to Task-first resume clients. Checking this never supplies a TestRun grant.
+func (r Repository) HasHistoricalAttributions(ctx context.Context) (bool, error) {
+	if r.Pool == nil {
+		return false, contextapp.ErrInvalidQuery
+	}
+	var available bool
+	err := r.Pool.QueryRow(ctx,
+		"SELECT to_regclass('qual.historical_test_run_attributions') IS NOT NULL").Scan(&available)
+	return available, err
+}
+
 // SQL strings are fixed per section: never interpolate user-supplied columns,
 // filters, SQL fragments or untrusted JSON. limit <= 101 is enforced upstream.
 func (r Repository) Page(ctx context.Context, project, item uuid.UUID, section contextapp.Section, q contextapp.PageQuery) ([]json.RawMessage, error) {
@@ -76,6 +88,21 @@ func (r Repository) Page(ctx context.Context, project, item uuid.UUID, section c
 			JOIN qual.test_cases tc ON tc.project_id=cv.project_id AND tc.id=cv.test_case_id
 			WHERE cv.project_id=$1 AND cv.work_item_id=$2
 			ORDER BY tc.key ASC,tc.id ASC LIMIT $3 OFFSET $4`
+	case contextapp.HistoricalAttributions:
+		// Goose21 is append-only; this is an index of provenance for a Task,
+		// not an authorization edge to the original legacy Run/Attempts.
+		// A separately authorized Task-context read is required before entry.
+		query = `
+			SELECT jsonb_build_object(
+				'source','historical_test_run_attributions',
+				'source_id',h.test_run_id,'run_id',h.test_run_id,
+				'attribution_kind',h.attribution_kind,
+				'role_entry_ids',h.role_entry_ids,
+				'acceptance_ids',h.acceptance_ids,
+				'recorded_at',h.recorded_at)
+			FROM qual.historical_test_run_attributions h
+			WHERE h.project_id=$1 AND h.work_item_id=$2
+			ORDER BY h.recorded_at DESC,h.test_run_id DESC LIMIT $3 OFFSET $4`
 	case contextapp.Artifacts:
 		query = `
 			SELECT jsonb_build_object(

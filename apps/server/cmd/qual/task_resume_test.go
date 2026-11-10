@@ -207,3 +207,47 @@ func TestQual67ResumeFailsClosedOnVersionAndInvisibleTask(t *testing.T) {
 		})
 	}
 }
+
+func TestPost73ResumeReadsAdvertisedHistoricalAttributionOnly(t *testing.T) {
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer post73-unit" {
+			t.Error("missing own test credential")
+		}
+		switch {
+		case r.URL.Path == resumeTestPath+"/context" && r.URL.Query().Get("section") == "overview":
+			fmt.Fprintf(w, `{"schema_version":2,"context_revision":7,"work_item":{"id":"%s","key":"QUAL-67","title":"Task","kind":"task","status":"in_progress","priority":"high","version":7,"description":"Original Task","acceptance_criteria":["verify source"],"assignee_id":null,"accountable_owner_id":null},"available_sections":["comments","attempts","historical_attributions"]}`, resumeTestItem)
+		case r.URL.Path == resumeTestPath+"/context":
+			section := r.URL.Query().Get("section")
+			if section == "historical_attributions" {
+				requested = true
+				fmt.Fprint(w, `{"context_revision":7,"items":[{"source":"historical_test_run_attributions","run_id":"11111111-1111-4111-8111-111111111111"}],"has_more":false,"paging_limited":false}`)
+			} else {
+				fmt.Fprint(w, `{"context_revision":7,"items":[],"has_more":false,"paging_limited":false}`)
+			}
+		case r.URL.Path == resumeTestPath+"/threads":
+			fmt.Fprint(w, `{"items":[]}`)
+		default:
+			t.Errorf("unauthorized/unexpected read: %s", r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("QUAL_API_URL", server.URL)
+	t.Setenv("QUAL_TOKEN", "post73-unit")
+	c, err := newClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := captureResume(t, func() error { return runResume(context.Background(), c, resumeTestPath, 2) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requested {
+		t.Fatal("advertised historical index not read")
+	}
+	rows := data["sections"].(map[string]any)["historical_attributions"].(map[string]any)["items"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["source"] != "historical_test_run_attributions" || rows[0].(map[string]any)["status"] != nil {
+		t.Fatalf("source provenance confused with Attempt: %v", rows)
+	}
+}
