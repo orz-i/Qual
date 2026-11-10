@@ -1061,6 +1061,195 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{projectID}/work-items/{itemID}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release current task assignee
+         * @description Current assignee or explicitly authorized access:manage project operator; only backlog/todo/in_progress. The in_progress task may be resumed by a new participant in task_scoped mode.
+         *     Requires Idempotency-Key and expected_version, checks actor membership,
+         *     current task relationship and status, then writes WorkItem+Audit+
+         *     Activity+Outbox atomically. No Agent is scheduled or stopped.
+         */
+        post: operations["releaseWorkItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectID}/work-items/{itemID}/reassign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transfer task to eligible project participant
+         * @description Current assignee may explicitly transfer, or access:manage may recover a blocked task. Target must be an active Human/Agent with valid project membership, credential scopes work:read/work:claim and effective project participation. An unassigned in_progress task requires access:manage recovery.
+         *     Requires Idempotency-Key and expected_version, checks actor membership,
+         *     current task relationship and status, then writes WorkItem+Audit+
+         *     Activity+Outbox atomically. No Agent is scheduled or stopped.
+         */
+        post: operations["reassignWorkItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectID}/work-items/{itemID}/review-claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim independent review for a WorkItem
+         * @description Only an in_review WorkItem under effective independent_review is eligible. Current or historical Executor/Tester, CreatedBy and accountable Owner may not claim; reviewer must be unassigned.
+         *     Only task_scoped projects with Goose19 ReviewAssignments support this
+         *     workflow. Requires an authenticated Human/Agent participant, matching
+         *     WorkItem status and review policy, Idempotency-Key and expected_version.
+         *     No new Principal or preconfigured reviewer role is created. Audit,
+         *     Activity, Outbox and current assignment/WorkItem CAS are one transaction.
+         */
+        post: operations["claimWorkItemReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectID}/work-items/{itemID}/review-release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Relinquish current independent review assignment
+         * @description The currently assigned Reviewer may release the relationship without changing WorkItem status or historical review outcomes. Prior Passed must be renewed after a new Review Claim.
+         *     Only task_scoped projects with Goose19 ReviewAssignments support this
+         *     workflow. Requires an authenticated Human/Agent participant, matching
+         *     WorkItem status and review policy, Idempotency-Key and expected_version.
+         *     No new Principal or preconfigured reviewer role is created. Audit,
+         *     Activity, Outbox and current assignment/WorkItem CAS are one transaction.
+         */
+        post: operations["releaseWorkItemReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectID}/work-items/{itemID}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Current authenticated Principal's WorkItem capabilities
+         * @description Read-only server-computed projection from current credential, Project
+         *     explicit Deny, WorkItem version/status/assignee, current reviewer and
+         *     effective review policy. Each write still performs fresh transaction
+         *     authorization and CAS. Empty allowed_actions does not grant rights.
+         *     Completion additionally verifies selected real evidence and Done Gate.
+         */
+        get: operations["getWorkItemCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectID}/task-authorization-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read project task authorization mode and schema readiness
+         * @description Requires effective access:manage; default legacy if no row or Goose17.
+         */
+        get: operations["getProjectTaskAuthorizationPolicy"];
+        /**
+         * Explicit audited project task authorization mode switch
+         * @description Requires current credential access:manage plus Project membership,
+         *     versioned CAS and Idempotency-Key. Schema must be fully Goose20-ready.
+         *     No automatic production activation or credential minting. A rollback
+         *     from task_scoped to legacy is a potential scope widening and requires
+         *     acknowledge_legacy_widening=true and a meaningful reason.
+         *     Same Project lock as WorkItem writes, with immutable history and atomic
+         *     Audit, Activity and Outbox. Never downgrade on authorization error.
+         */
+        put: operations["changeProjectTaskAuthorizationPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectID}/task-authorization-policy/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read-only scoped-mode change preview, no access grants
+         * @description Requires access:manage. Counts do not predict successful work actions.
+         */
+        get: operations["previewProjectTaskAuthorizationPolicy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{projectID}/review-policy": {
         parameters: {
             query?: never;
@@ -1428,6 +1617,11 @@ export interface components {
         VersionRequest: {
             expected_version: number;
         };
+        ReassignWorkItemRequest: {
+            expected_version: number;
+            /** Format: uuid */
+            new_assignee_id: string;
+        };
         /**
          * @description Status done is a legacy transition and becomes unavailable after
          *     Goose13; clients must submit DoneDecisionInput to /complete instead.
@@ -1435,6 +1629,35 @@ export interface components {
         TransitionRequest: {
             status: components["schemas"]["Status"];
             expected_version: number;
+        };
+        TaskAuthorizationPolicy: {
+            /** Format: uuid */
+            project_id: string;
+            /** @enum {string} */
+            mode: "legacy" | "task_scoped";
+            version: number;
+            /** @enum {string} */
+            source: "default" | "project";
+            /** @description Full forward-only Goose20 schema, including immutable Run binding and reviewer relation */
+            schema_ready: boolean;
+        };
+        TaskAuthorizationPolicyPreview: {
+            current: components["schemas"]["TaskAuthorizationPolicy"];
+            /** @enum {string} */
+            target_mode: "legacy" | "task_scoped";
+            would_change: boolean;
+            legacy_scope_widening: boolean;
+            requires_legacy_widening_ack: boolean;
+            work_items_total: number;
+            unassigned_open_items: number;
+        };
+        TaskAuthorizationPolicyChange: {
+            /** @enum {string} */
+            mode: "legacy" | "task_scoped";
+            expected_version: number;
+            reason: string;
+            /** @description Must be true when switching target to legacy, which may restore old broad project scopes */
+            acknowledge_legacy_widening: boolean;
         };
         ProjectReviewPolicy: {
             /** Format: uuid */
@@ -1662,6 +1885,9 @@ export interface components {
             id: string;
             key: string;
             title: string;
+            /** @description Full WorkItem execution contract; source is the WorkItem, not an Agent summary */
+            description: string;
+            acceptance_criteria: string[];
             kind: components["schemas"]["Kind"];
             status: components["schemas"]["Status"];
             priority: components["schemas"]["Priority"];
@@ -1782,6 +2008,32 @@ export interface components {
          *     Context does not confer audit, test or artifact permissions.
          */
         WorkContextFact: components["schemas"]["WorkContextDependencyFact"] | components["schemas"]["WorkContextCommentFact"] | components["schemas"]["WorkContextReviewFact"] | components["schemas"]["WorkContextCoverageFact"] | components["schemas"]["WorkContextAttemptFact"] | components["schemas"]["WorkContextArtifactFact"] | components["schemas"]["WorkContextExternalReferenceFact"];
+        /**
+         * @description Exact server-domain action identifier, not a permission token
+         * @enum {string}
+         */
+        TaskAction: "task.claim" | "task.update" | "task.comment" | "task.start" | "task.submit_review" | "task.cancel" | "task.release" | "task.reassign" | "task.report_test" | "task.read_test" | "task.read_evidence" | "task.attach_evidence" | "task.record_executor" | "task.record_tester" | "task.claim_review" | "task.record_review" | "task.return_for_work" | "task.release_review" | "task.complete_independent" | "task.complete_owner";
+        TaskCapabilities: {
+            /** @constant */
+            schema_version: 1;
+            /** @enum {string} */
+            project_mode: "legacy" | "task_scoped";
+            /** Format: uuid */
+            work_item_id: string;
+            work_version: number;
+            policy_version: number;
+            /** @enum {string} */
+            review_mode: "owner_acceptance" | "independent_review";
+            policy_source: string;
+            my_capacity: ("candidate" | "executor" | "reviewer" | "owner")[];
+            allowed_actions: components["schemas"]["TaskAction"][];
+            /** @description Safe coarse reasons only; never includes other principals or credentials */
+            denied_reasons?: {
+                [key: string]: "participation_required" | "project_explicit_deny" | "not_independent" | "status_or_relation" | "project_permission_required" | "not_current_task_capacity";
+            };
+            /** @description Granted Complete/transfer action still verifies actual selected evidence/target and CAS in its write */
+            verification_required: boolean;
+        };
         WorkContextPage: {
             /** @constant */
             schema_version: 2;
@@ -1805,6 +2057,7 @@ export interface components {
             available_sections?: string[];
             latest_review?: components["schemas"]["WorkContextReviewFact"];
             acceptance?: components["schemas"]["WorkAcceptanceHistory"];
+            capabilities?: components["schemas"]["TaskCapabilities"];
         };
         /**
          * @description External host claim only, never a WorkItem or TestAttempt result
@@ -2114,6 +2367,11 @@ export interface components {
             external_run_key?: string;
             environment?: string;
             build_ref?: string;
+            /**
+             * Format: uuid
+             * @description Optional immutable WorkItem binding for task-scoped TestRuns; all CaseVersions must cover that WorkItem (Goose20)
+             */
+            work_item_id?: string;
             case_version_ids: string[];
         };
         TestRunItem: {
@@ -2134,6 +2392,11 @@ export interface components {
             id: string;
             /** Format: uuid */
             project_id: string;
+            /**
+             * Format: uuid
+             * @description Persisted owning WorkItem, or absent for legacy unbound runs
+             */
+            work_item_id?: string;
             name: string;
             source_system: string;
             external_run_key?: string;
@@ -4629,6 +4892,266 @@ export interface operations {
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
             428: components["responses"]["Precondition"];
+        };
+    };
+    releaseWorkItem: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            /** @description WorkItem after atomic assignment change (or idempotent replay) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            428: components["responses"]["Precondition"];
+        };
+    };
+    reassignWorkItem: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReassignWorkItemRequest"];
+            };
+        };
+        responses: {
+            /** @description WorkItem after atomic assignment change (or idempotent replay) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            428: components["responses"]["Precondition"];
+        };
+    };
+    claimWorkItemReview: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Persisted WorkItem after review assignment CAS */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            428: components["responses"]["Precondition"];
+        };
+    };
+    releaseWorkItemReview: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Persisted WorkItem after review assignment CAS */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            428: components["responses"]["Precondition"];
+        };
+    };
+    getWorkItemCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+                itemID: components["parameters"]["ItemID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current per-WorkItem capabilities snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskCapabilities"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getProjectTaskAuthorizationPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current versioned policy with schema readiness */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskAuthorizationPolicy"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    changeProjectTaskAuthorizationPolicy: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskAuthorizationPolicyChange"];
+            };
+        };
+        responses: {
+            /** @description New policy version or identical idempotent replay */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskAuthorizationPolicy"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            428: components["responses"]["Precondition"];
+        };
+    };
+    previewProjectTaskAuthorizationPolicy: {
+        parameters: {
+            query: {
+                mode: "legacy" | "task_scoped";
+            };
+            header?: never;
+            path: {
+                projectID: components["parameters"]["ProjectID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current policy, target mode and safe aggregate impact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskAuthorizationPolicyPreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     getProjectReviewPolicy: {

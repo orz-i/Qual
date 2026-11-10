@@ -123,7 +123,7 @@ func main() {
 			}
 			return nil
 		}
-		workService := workapp.Service{Identity: auth, Work: workpostgres.Repository{Pool: pool}, Roles: workpostgres.Repository{Pool: pool}, Completion: workpostgres.Repository{Pool: pool}, ReviewPolicy: workpostgres.Repository{Pool: pool}, AcceptanceHistory: workpostgres.Repository{Pool: pool}, WorkReviewPolicy: workpostgres.Repository{Pool: pool}}
+		workService := workapp.Service{Identity: auth, Work: workpostgres.Repository{Pool: pool}, TaskPolicy: workpostgres.Repository{Pool: pool}, Roles: workpostgres.Repository{Pool: pool}, Completion: workpostgres.Repository{Pool: pool}, ReviewPolicy: workpostgres.Repository{Pool: pool}, AcceptanceHistory: workpostgres.Repository{Pool: pool}, WorkReviewPolicy: workpostgres.Repository{Pool: pool}, ReviewAssignments: workpostgres.Repository{Pool: pool}}
 		deps = &httpapi.Dependencies{
 			Identity:     auth,
 			Ready:        readiness,

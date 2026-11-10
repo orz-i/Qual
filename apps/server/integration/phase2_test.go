@@ -118,7 +118,7 @@ func setup(t *testing.T) *fixture {
 	f.hooks = &webhooks.Manager{Pool: pool, Identity: auth, Config: webhooks.Config{
 		Key: encryptionKey, HasKey: true, AllowedHosts: []string{"example.com"}, AllowLoopbackTest: true,
 	}}
-	workSvc := workapp.Service{Identity: auth, Work: workpostgres.Repository{Pool: pool}, Roles: workpostgres.Repository{Pool: pool}, Completion: workpostgres.Repository{Pool: pool}, ReviewPolicy: workpostgres.Repository{Pool: pool}, AcceptanceHistory: workpostgres.Repository{Pool: pool}, WorkReviewPolicy: workpostgres.Repository{Pool: pool}}
+	workSvc := workapp.Service{Identity: auth, Work: workpostgres.Repository{Pool: pool}, TaskPolicy: workpostgres.Repository{Pool: pool}, Roles: workpostgres.Repository{Pool: pool}, Completion: workpostgres.Repository{Pool: pool}, ReviewPolicy: workpostgres.Repository{Pool: pool}, AcceptanceHistory: workpostgres.Repository{Pool: pool}, WorkReviewPolicy: workpostgres.Repository{Pool: pool}, ReviewAssignments: workpostgres.Repository{Pool: pool}}
 	var eventService *eventapp.Service
 	var eventSchema bool
 	if err := pool.QueryRow(ctx, "SELECT to_regclass('qual.external_events') IS NOT NULL").Scan(&eventSchema); err != nil {
@@ -148,7 +148,9 @@ func setup(t *testing.T) *fixture {
              WHERE is_applied=true`).Scan(&v); err != nil {
 				return err
 			}
-			if v < 12 || v > 17 {
+			// Match the compiled Go Server's admitted Goose12..21 range.
+			// This fixture is read-only readiness; it never migrates a DB.
+			if v < 12 || v > 21 {
 				return errors.New("schema version mismatch")
 			}
 			if objects != nil {

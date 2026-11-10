@@ -51,6 +51,9 @@ func NewHandler(deps ...*Dependencies) http.Handler {
 			mux.HandleFunc("GET /api/v1/projects/{projectID}/access", access.members)
 			mux.HandleFunc("PUT /api/v1/projects/{projectID}/access/{principalID}/permissions/{permission}", access.change)
 		}
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/task-authorization-policy", api.taskAuthorizationPolicy)
+		mux.HandleFunc("PUT /api/v1/projects/{projectID}/task-authorization-policy", api.taskAuthorizationPolicy)
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/task-authorization-policy/preview", api.taskAuthorizationPreview)
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/review-policy", api.reviewPolicy)
 		mux.HandleFunc("PUT /api/v1/projects/{projectID}/review-policy", api.reviewPolicy)
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items", api.create)
@@ -62,11 +65,16 @@ func NewHandler(deps ...*Dependencies) http.Handler {
 			mux.HandleFunc("GET /api/v1/projects/{projectID}/attention", api.attentionInbox)
 		}
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/work-items/{itemID}", api.get)
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/work-items/{itemID}/capabilities", api.capabilities)
 		if deps[0].Context != nil {
 			mux.HandleFunc("GET /api/v1/projects/{projectID}/work-items/{itemID}/context", contextAPI{work: api, read: deps[0].Context}.get)
 		}
 		mux.HandleFunc("PATCH /api/v1/projects/{projectID}/work-items/{itemID}", api.update)
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/claim", api.claim)
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/release", api.release)
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/reassign", api.reassign)
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/review-claim", api.reviewClaim)
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/review-release", api.reviewRelease)
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/transitions", api.transition)
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/work-items/{itemID}/complete", api.complete)
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/work-items/{itemID}/acceptances", api.acceptances)
