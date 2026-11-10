@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge'
 import { WorkEvidencePacketPreview } from '@/features/evidence/work-packet-preview'
 import { isEvidencePacketFilename } from '@/features/evidence/work-packet'
 import { useMyAccess } from '@/features/access/api'
+import { useWorkCapabilities } from '@/features/work/api'
+import { allowsTaskAction } from '@/features/work/capabilities'
 import {
   type ArtifactTargetKind,
   useArtifacts, useReferences, useEvidenceActions,
@@ -128,9 +130,20 @@ export function EvidencePanel({projectID,targetKind,targetID}:{
   const artifacts=useArtifacts(projectID,targetKind,targetID)
   const references=useReferences(projectID,targetKind,targetID)
   const access=useMyAccess(projectID)
+  const capabilities=useWorkCapabilities(projectID,targetKind==='work_item'?targetID:'')
   const permissions=access.data?.effective_permissions??[]
-  const canUpload=permissions.includes('artifact:write')
-  const canReference=permissions.includes(targetKind==='work_item'?'work:write':'test:write')
+  const cap=capabilities.data
+  // For a WorkItem target, only the current task action from the server may
+  // show a mutation. For non-WorkItem legacy evidence, preserve the independent
+  // project-level grant (the backend still authorizes all mutations).
+  const taskTarget=targetKind==='work_item'
+  const canUpload=taskTarget
+    ? Boolean(cap&&allowsTaskAction(cap,cap.work_version,'task.attach_evidence'))
+    : permissions.includes('artifact:write')
+  const canReference=taskTarget
+    ? Boolean(cap&&(allowsTaskAction(cap,cap.work_version,'task.attach_evidence')||
+      allowsTaskAction(cap,cap.work_version,'task.update')))
+    : permissions.includes('test:write')
   return (
     <Card id="work-evidence" className="scroll-mt-24">
       <CardHeader>
