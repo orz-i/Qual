@@ -102,4 +102,11 @@ if "$GOOSE_BIN" -dir apps/server/migrations postgres "$SCRATCH" down >/dev/null 
 fi
 [[ "$(psql_db -c 'SELECT MAX(version_id) FROM public.goose_db_version WHERE is_applied')" = 21 ]] || exit 12
 [[ "$(psql_db -c 'SELECT COUNT(*) FROM qual.historical_test_run_attributions')" = 1 ]] || exit 12
+# Exercise the REAL Go Server startup/readiness schema inspector against this
+# same disposable Goose21 database, including a disabled-trigger negative.
+# Existing Goose17 fixture coverage stays in its original separate matrix.
+(
+  cd apps/server
+  QUAL_TEST_DATABASE_URL="$SCRATCH" go test -race -tags=integration -count=1     -run '^TestQual65Goose21ProvenanceSchemaReadyAndTriggerFailClosed$' -v ./cmd/server
+)
 printf 'QUAL75_GOOSE21_FORWARD_ISOLATED_PASS old_runs_unchanged=true unique=1 ambiguous=0 uncited=0 task_mode_not_auto_enabled=true immutable=true forbidden_down_refused=true\n'
