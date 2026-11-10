@@ -54,6 +54,9 @@ func (w *fakeWork) ReadAcceptanceHistory(context.Context, identity.Actor, uuid.U
 }
 
 func (r *fakePages) TaskMode(context.Context, uuid.UUID) (domain.TaskAuthorizationMode, error) {
+	if r.mode != "" {
+		return r.mode, nil
+	}
 	return domain.LegacyAuthorization, nil
 }
 func (r *fakePages) AuthorizeTaskContextRead(context.Context, identity.Actor, identity.Project, uuid.UUID, Section) error {
@@ -63,6 +66,7 @@ func (r *fakePages) AuthorizeTaskContextRead(context.Context, identity.Actor, id
 type fakePages struct {
 	pages map[Section][]json.RawMessage
 	calls []Section
+	mode  domain.TaskAuthorizationMode
 }
 
 func (r *fakePages) Page(_ context.Context, _, _ uuid.UUID, s Section, q PageQuery) ([]json.RawMessage, error) {
@@ -291,5 +295,35 @@ func TestLegacyDoneNeverBecomesIndependentAcceptance(t *testing.T) {
 	}
 	if len(r.calls) != 1 || r.calls[0] != Reviews {
 		t.Fatalf("acceptance page should reuse canonical acceptance service: %v", r.calls)
+	}
+}
+
+// Even when Work implements the newer optional Capabilities projection,
+// a Goose17 Legacy project must not call an unconfigured TaskPolicy.
+// Scoped projects still use the actual Task capabilities and version check.
+type capableWork struct {
+	*fakeWork
+	calls int
+}
+
+func (w *capableWork) Capabilities(_ context.Context, _ identity.Actor, _, _ uuid.UUID) (work.TaskCapabilities, error) {
+	w.calls++
+	return work.TaskCapabilities{WorkVersion: w.item.Version, ProjectMode: domain.TaskScopedAuthorization}, nil
+}
+
+func TestLegacyContextOverviewSkipsScopedCapabilitiesEvenWhenWorkSupportsThem(t *testing.T) {
+	s, _, w, r, project, item := sampleService()
+	capable := &capableWork{fakeWork: w}
+	s.Work = capable
+	legacy, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: Overview})
+	if err != nil || legacy.Capabilities != nil || capable.calls != 0 {
+		t.Fatalf("Goose17 legacy context invoked scoped capabilities: %v, calls=%d, page=%+v", err, capable.calls, legacy)
+	}
+	// TaskScoped still requires the actual projection. Keep that path
+	// explicit, rather than disabling all capability checks as a workaround.
+	r.mode = domain.TaskScopedAuthorization
+	scoped, err := s.Get(context.Background(), identity.Actor{}, project, item, Input{Section: Overview})
+	if err != nil || scoped.Capabilities == nil || scoped.Capabilities.WorkVersion != w.item.Version || capable.calls != 1 {
+		t.Fatalf("task-scoped context lost capabilities: %v, calls=%d, page=%+v", err, capable.calls, scoped)
 	}
 }

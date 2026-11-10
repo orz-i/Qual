@@ -243,9 +243,13 @@ func (s Service) Get(ctx context.Context, actor identity.Actor, projectID, itemI
 		// Optional additive projection: legacy integrations implementing the
 		// old WorkReader contract need no new interface. The production Work
 		// Service returns the same fields as the REST/CLI/MCP endpoint.
+		// Goose17 legacy projects still use the old WorkReader + REST/MCP
+		// contract; TaskCapabilities is a task-scoped-only projection.
+		// Calling an unconfigured TaskPolicy here would make existing clients
+		// fail even though their pre-existing project permissions are valid.
 		if provider, ok := s.Work.(interface {
 			Capabilities(context.Context, identity.Actor, uuid.UUID, uuid.UUID) (work.TaskCapabilities, error)
-		}); ok {
+		}); ok && mode == workdomain.TaskScopedAuthorization {
 			caps, err := provider.Capabilities(ctx, actor, projectID, itemID)
 			if err != nil {
 				return Page{}, err
