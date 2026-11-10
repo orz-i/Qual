@@ -22,7 +22,7 @@ class MigrationSequenceGuardTests(unittest.TestCase):
 
     def test_current_monotonic_sequence(self):
         root = Path(__file__).resolve().parents[2] / "apps/server/migrations"
-        self.assertEqual(MODULE.check_sequence(root), (1, 17))
+        self.assertEqual(MODULE.check_sequence(root), (1, 21))
 
     def release_names(self):
         return [
@@ -52,6 +52,15 @@ class MigrationSequenceGuardTests(unittest.TestCase):
                      for name in self.release_names()]
             root = self.create(names)
             with self.assertRaisesRegex(ValueError, f"Goose {number} is allocated"):
+                MODULE.check_sequence(root)
+
+    def test_goose18_through_21_allocations_cannot_be_reused(self):
+        current = self.release_names() + [MODULE.FROZEN_MIGRATIONS[n] for n in range(18, 22)]
+        for version in (18, 19, 20, 21):
+            names = [f"{version:05d}_conflict.sql" if name.startswith(f"{version:05d}_") else name
+                     for name in current]
+            root = self.create(names)
+            with self.assertRaisesRegex(ValueError, f"Goose {version} is allocated"):
                 MODULE.check_sequence(root)
 
     def test_new_goose17_requires_no_gaps(self):
