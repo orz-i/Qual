@@ -7,6 +7,7 @@ import (
 	"qual/internal/evidence/domain"
 	identity "qual/internal/identity/application"
 	role "qual/internal/identity/domain"
+	workdomain "qual/internal/work/domain"
 )
 
 type ThreadRepository interface {
@@ -29,7 +30,7 @@ func (s Service) LinkThread(ctx context.Context, a identity.Actor, projectID, it
 	if a.Type == role.Integration {
 		return domain.ThreadMutation{}, identity.ErrForbidden
 	}
-	project, err := s.authorize(ctx, a, projectID, role.WorkWrite)
+	project, err := s.resourceProject(ctx, a, projectID, domain.WorkItem, itemID, role.WorkWrite)
 	if err != nil {
 		return domain.ThreadMutation{}, err
 	}
@@ -48,7 +49,7 @@ func (s Service) UnlinkThread(ctx context.Context, a identity.Actor, projectID, 
 	if a.Type == role.Integration {
 		return domain.ThreadMutation{}, identity.ErrForbidden
 	}
-	project, err := s.authorize(ctx, a, projectID, role.WorkWrite)
+	project, err := s.resourceProject(ctx, a, projectID, domain.WorkItem, itemID, role.WorkWrite)
 	if err != nil {
 		return domain.ThreadMutation{}, err
 	}
@@ -63,7 +64,15 @@ func (s Service) WorkThreads(ctx context.Context, a identity.Actor, projectID, i
 	if itemID == uuid.Nil || limit < 1 || limit > 100 {
 		return domain.WorkThreadPage{}, domain.ErrValidation
 	}
-	if _, err := s.authorize(ctx, a, projectID, role.WorkRead); err != nil {
+	mode, err := s.Records.TaskMode(ctx, projectID)
+	if err != nil {
+		return domain.WorkThreadPage{}, err
+	}
+	if mode == workdomain.TaskScopedAuthorization {
+		if err := s.resourceRead(ctx, a, projectID, domain.WorkItem, itemID); err != nil {
+			return domain.WorkThreadPage{}, err
+		}
+	} else if _, err := s.authorize(ctx, a, projectID, role.WorkRead); err != nil {
 		return domain.WorkThreadPage{}, err
 	}
 	return s.Threads.ListWorkThreads(ctx, projectID, itemID, limit, cursor)
@@ -72,7 +81,17 @@ func (s Service) ThreadWorkItems(ctx context.Context, a identity.Actor, projectI
 	if threadID == uuid.Nil || limit < 1 || limit > 100 {
 		return domain.ThreadWorkItemPage{}, domain.ErrValidation
 	}
-	if _, err := s.authorize(ctx, a, projectID, role.WorkRead); err != nil {
+	mode, err := s.Records.TaskMode(ctx, projectID)
+	if err != nil {
+		return domain.ThreadWorkItemPage{}, err
+	}
+	if mode == workdomain.TaskScopedAuthorization {
+		// Thread -> WorkItems can reveal multiple unrelated task IDs. Without
+		// a specific WorkItem to authorize, this is project governance data.
+		if _, err := s.authorize(ctx, a, projectID, role.AccessManage); err != nil {
+			return domain.ThreadWorkItemPage{}, err
+		}
+	} else if _, err := s.authorize(ctx, a, projectID, role.WorkRead); err != nil {
 		return domain.ThreadWorkItemPage{}, err
 	}
 	return s.Threads.ListThreadWorkItems(ctx, projectID, threadID, limit, cursor)

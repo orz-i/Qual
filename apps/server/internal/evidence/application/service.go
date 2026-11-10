@@ -14,6 +14,7 @@ import (
 	"qual/internal/evidence/domain"
 	identity "qual/internal/identity/application"
 	role "qual/internal/identity/domain"
+	workdomain "qual/internal/work/domain"
 )
 
 var (
@@ -57,6 +58,10 @@ type Repository interface {
 	GetExport(context.Context, uuid.UUID, uuid.UUID) (domain.Export, string, error)
 	ListExports(context.Context, uuid.UUID) ([]domain.Export, error)
 	CleanupStale(context.Context, ObjectStore, time.Duration) (int, error)
+	TaskMode(context.Context, uuid.UUID) (workdomain.TaskAuthorizationMode, error)
+	TargetWork(context.Context, uuid.UUID, domain.TargetKind, uuid.UUID) (*uuid.UUID, error)
+	ArtifactTarget(context.Context, uuid.UUID, uuid.UUID) (domain.Artifact, error)
+	AuthorizeTaskArtifactRead(context.Context, identity.Actor, identity.Project, domain.TargetKind, uuid.UUID) error
 }
 type Service struct {
 	Identity identity.Authenticator
@@ -68,6 +73,46 @@ type Service struct {
 func (s Service) authorize(ctx context.Context, a identity.Actor, pid uuid.UUID, p role.Permission) (identity.Project, error) {
 	return s.Identity.AuthorizeProject(ctx, a, pid, p)
 }
+
+// resourceProject is a preliminary authorization bound to the persisted
+// target. Mutations reauthorize again under Project -> WorkItem PG locks.
+func (s Service) resourceProject(ctx context.Context, a identity.Actor, pid uuid.UUID,
+	kind domain.TargetKind, target uuid.UUID, permission role.Permission) (identity.Project, error) {
+	mode, err := s.Records.TaskMode(ctx, pid)
+	if err != nil {
+		return identity.Project{}, err
+	}
+	if mode == workdomain.TaskScopedAuthorization && a.Type != role.Integration {
+		workID, err := s.Records.TargetWork(ctx, pid, kind, target)
+		if err != nil {
+			return identity.Project{}, err
+		}
+		if workID != nil {
+			project, err := s.authorize(ctx, a, pid, role.WorkRead)
+			if err != nil {
+				return identity.Project{}, err
+			}
+			if _, err := s.authorize(ctx, a, pid, role.WorkClaim); err != nil {
+				return identity.Project{}, err
+			}
+			return project, nil
+		}
+		if _, err := s.authorize(ctx, a, pid, role.AccessManage); err != nil {
+			return identity.Project{}, err
+		}
+	}
+	return s.authorize(ctx, a, pid, permission)
+}
+
+func (s Service) resourceRead(ctx context.Context, a identity.Actor, pid uuid.UUID,
+	kind domain.TargetKind, target uuid.UUID) error {
+	project, err := s.resourceProject(ctx, a, pid, kind, target, role.ArtifactRead)
+	if err != nil {
+		return err
+	}
+	return s.Records.AuthorizeTaskArtifactRead(ctx, a, project, kind, target)
+}
+
 func (s Service) Begin(ctx context.Context, a identity.Actor, pid uuid.UUID, in domain.BeginInput, m Meta) (domain.Artifact, error) {
 	if err := m.Validate(); err != nil {
 		return domain.Artifact{}, err
@@ -82,7 +127,7 @@ func (s Service) Begin(ctx context.Context, a identity.Actor, pid uuid.UUID, in 
 	if s.Objects == nil {
 		return domain.Artifact{}, domain.ErrUnavailable
 	}
-	p, err := s.authorize(ctx, a, pid, role.ArtifactWrite)
+	p, err := s.resourceProject(ctx, a, pid, in.TargetKind, in.TargetID, role.ArtifactWrite)
 	if err != nil {
 		return domain.Artifact{}, err
 	}
@@ -98,7 +143,11 @@ func (s Service) Upload(ctx context.Context, a identity.Actor, pid, id uuid.UUID
 	if s.Objects == nil {
 		return domain.Artifact{}, domain.ErrUnavailable
 	}
-	p, err := s.authorize(ctx, a, pid, role.ArtifactWrite)
+	target, err := s.Records.ArtifactTarget(ctx, pid, id)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	p, err := s.resourceProject(ctx, a, pid, target.TargetKind, target.TargetID, role.ArtifactWrite)
 	if err != nil {
 		return domain.Artifact{}, err
 	}
@@ -115,30 +164,42 @@ func (s Service) Complete(ctx context.Context, a identity.Actor, pid, id uuid.UU
 	if s.Objects == nil {
 		return domain.Artifact{}, domain.ErrUnavailable
 	}
-	p, err := s.authorize(ctx, a, pid, role.ArtifactWrite)
+	target, err := s.Records.ArtifactTarget(ctx, pid, id)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	p, err := s.resourceProject(ctx, a, pid, target.TargetKind, target.TargetID, role.ArtifactWrite)
 	if err != nil {
 		return domain.Artifact{}, err
 	}
 	return s.Records.MarkReady(ctx, a, p, id, m, digest("artifact.complete", id), nil)
 }
 func (s Service) Get(ctx context.Context, a identity.Actor, pid, id uuid.UUID) (domain.Artifact, error) {
-	if _, err := s.authorize(ctx, a, pid, role.ArtifactRead); err != nil {
+	target, err := s.Records.ArtifactTarget(ctx, pid, id)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	if err := s.resourceRead(ctx, a, pid, target.TargetKind, target.TargetID); err != nil {
 		return domain.Artifact{}, err
 	}
 	item, _, err := s.Records.GetArtifact(ctx, pid, id)
 	return item, err
 }
 func (s Service) List(ctx context.Context, a identity.Actor, pid uuid.UUID, kind domain.TargetKind, target uuid.UUID) ([]domain.Artifact, error) {
-	if _, err := s.authorize(ctx, a, pid, role.ArtifactRead); err != nil {
-		return nil, err
-	}
 	if !domain.ValidTarget(kind) || target == uuid.Nil {
 		return nil, domain.ErrValidation
+	}
+	if err := s.resourceRead(ctx, a, pid, kind, target); err != nil {
+		return nil, err
 	}
 	return s.Records.ListArtifacts(ctx, pid, kind, target)
 }
 func (s Service) Download(ctx context.Context, a identity.Actor, pid, id uuid.UUID) (domain.Artifact, []byte, error) {
-	if _, err := s.authorize(ctx, a, pid, role.ArtifactRead); err != nil {
+	target, err := s.Records.ArtifactTarget(ctx, pid, id)
+	if err != nil {
+		return domain.Artifact{}, nil, err
+	}
+	if err := s.resourceRead(ctx, a, pid, target.TargetKind, target.TargetID); err != nil {
 		return domain.Artifact{}, nil, err
 	}
 	if s.Objects == nil {
@@ -174,7 +235,7 @@ func (s Service) AddReference(ctx context.Context, a identity.Actor, pid uuid.UU
 	} else {
 		perm = role.TestWrite
 	}
-	p, err := s.authorize(ctx, a, pid, perm)
+	p, err := s.resourceProject(ctx, a, pid, in.TargetKind, in.TargetID, perm)
 	if err != nil {
 		return domain.Reference{}, err
 	}
@@ -190,7 +251,15 @@ func (s Service) References(ctx context.Context, a identity.Actor, pid uuid.UUID
 	} else {
 		perm = role.TestRead
 	}
-	if _, err := s.authorize(ctx, a, pid, perm); err != nil {
+	mode, err := s.Records.TaskMode(ctx, pid)
+	if err != nil {
+		return nil, err
+	}
+	if mode == workdomain.TaskScopedAuthorization {
+		if err := s.resourceRead(ctx, a, pid, kind, target); err != nil {
+			return nil, err
+		}
+	} else if _, err := s.authorize(ctx, a, pid, perm); err != nil {
 		return nil, err
 	}
 	return s.Records.ListReferences(ctx, pid, kind, target)

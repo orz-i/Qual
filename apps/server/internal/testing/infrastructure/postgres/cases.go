@@ -14,6 +14,7 @@ import (
 	identity "qual/internal/identity/application"
 	"qual/internal/testing/application"
 	"qual/internal/testing/domain"
+	workdomain "qual/internal/work/domain"
 )
 
 func scanCase(row interface{ Scan(...any) error }) (domain.TestCase, error) {
@@ -253,6 +254,9 @@ func (r Repository) PublishCase(ctx context.Context, actor identity.Actor, p ide
 }
 func (r Repository) LinkCoverage(ctx context.Context, actor identity.Actor, p identity.Project, cid, wid uuid.UUID, m application.Meta, h [32]byte) (domain.TestCase, error) {
 	body, err := r.idempotent(ctx, actor, p, "case.coverage", m, h, func(tx pgx.Tx) (any, error) {
+		if err := r.taskRunGuard(ctx, tx, actor, p, &wid, workdomain.TaskRecordTester); err != nil {
+			return nil, err
+		}
 		c, err := scanCase(tx.QueryRow(ctx, caseSelect+` WHERE c.project_id=$1 AND c.id=$2`, p.ID, cid))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound

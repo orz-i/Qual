@@ -57,6 +57,9 @@ func (r Repository) ListArtifacts(ctx context.Context, pid uuid.UUID, kind domai
 func (r Repository) Begin(ctx context.Context, actor identity.Actor, p identity.Project,
 	in domain.BeginInput, m application.Meta, h [32]byte) (domain.Artifact, error) {
 	raw, err := r.idempotent(ctx, actor, p, "artifact.begin", m, h, func(tx pgx.Tx) (any, error) {
+		if err := r.scopedArtifactWrite(ctx, tx, actor, p, in.TargetKind, in.TargetID); err != nil {
+			return nil, err
+		}
 		if err := targetExists(ctx, tx, p.ID, in.TargetKind, in.TargetID); err != nil {
 			return nil, err
 		}
@@ -95,9 +98,22 @@ func (r Repository) MarkUploaded(ctx context.Context, actor identity.Actor, p id
 	}
 	var uploadedKey string
 	raw, err := r.idempotent(ctx, actor, p, "artifact.upload", m, h, func(tx pgx.Tx) (any, error) {
+		var targetKind domain.TargetKind
+		var targetID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT target_kind,target_id FROM qual.artifacts WHERE project_id=$1 AND id=$2`,
+			p.ID, id).Scan(&targetKind, &targetID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := r.scopedArtifactWrite(ctx, tx, actor, p, targetKind, targetID); err != nil {
+			return nil, err
+		}
 		var key string
 		var item domain.Artifact
-		err := tx.QueryRow(ctx, `SELECT `+artifactColumns+`,object_key FROM qual.artifacts
+		err = tx.QueryRow(ctx, `SELECT `+artifactColumns+`,object_key FROM qual.artifacts
    WHERE project_id=$1 AND id=$2 FOR UPDATE`, p.ID, id).Scan(
 			&item.ID, &item.ProjectID, &item.TargetKind, &item.TargetID, &item.Filename, &item.MediaType,
 			&item.SizeBytes, &item.SHA256, &item.State, &item.CreatedBy, &item.CreatedAt, &item.UploadedAt, &item.ReadyAt, &key)
@@ -146,9 +162,22 @@ func (r Repository) MarkReady(ctx context.Context, actor identity.Actor, p ident
 		return domain.Artifact{}, domain.ErrUnavailable
 	}
 	raw, err := r.idempotent(ctx, actor, p, "artifact.complete", m, h, func(tx pgx.Tx) (any, error) {
+		var targetKind domain.TargetKind
+		var targetID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT target_kind,target_id FROM qual.artifacts WHERE project_id=$1 AND id=$2`,
+			p.ID, id).Scan(&targetKind, &targetID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := r.scopedArtifactWrite(ctx, tx, actor, p, targetKind, targetID); err != nil {
+			return nil, err
+		}
 		var item domain.Artifact
 		var key string
-		err := tx.QueryRow(ctx, `SELECT `+artifactColumns+`,object_key FROM qual.artifacts
+		err = tx.QueryRow(ctx, `SELECT `+artifactColumns+`,object_key FROM qual.artifacts
   WHERE project_id=$1 AND id=$2 FOR UPDATE`, p.ID, id).Scan(
 			&item.ID, &item.ProjectID, &item.TargetKind, &item.TargetID, &item.Filename, &item.MediaType,
 			&item.SizeBytes, &item.SHA256, &item.State, &item.CreatedBy, &item.CreatedAt, &item.UploadedAt, &item.ReadyAt, &key)

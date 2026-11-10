@@ -14,14 +14,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	identity "qual/internal/identity/application"
+	idomain "qual/internal/identity/domain"
 	"qual/internal/testing/application"
 	"qual/internal/testing/domain"
 	workdomain "qual/internal/work/domain"
+	workpg "qual/internal/work/infrastructure/postgres"
 )
 
 func (r Repository) LinkDefect(ctx context.Context, actor identity.Actor, p identity.Project,
 	attemptID uuid.UUID, in domain.BugLinkInput, m application.Meta, h [32]byte) (domain.BugLink, error) {
 	body, err := r.idempotent(ctx, actor, p, "attempt.defect", m, h, func(tx pgx.Tx) (any, error) {
+		// This is a project-wide governance mutation (it may create a Bug).
+		// Serialize with project writes before acquiring source Attempt rows.
+		var projectLocked uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM qual.projects WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, p.WorkspaceID, p.ID).Scan(&projectLocked); err != nil {
+			return nil, err
+		}
+		if err := (workpg.Repository{Pool: r.Pool}).AuthorizeUnboundResource(ctx, tx, actor, p, idomain.WorkWrite); err != nil {
+			return nil, err
+		}
 		var status domain.ResultStatus
 		err := tx.QueryRow(ctx, `SELECT status FROM qual.test_attempts WHERE project_id=$1 AND id=$2`, p.ID, attemptID).Scan(&status)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -111,6 +122,13 @@ func (r Repository) LinkDefect(ctx context.Context, actor identity.Actor, p iden
 func (r Repository) ImportJUnit(ctx context.Context, actor identity.Actor, p identity.Project,
 	rid uuid.UUID, in application.JUnitInput, cases []domain.ReportCase, m application.Meta, h [32]byte) (domain.ImportSummary, error) {
 	body, err := r.idempotent(ctx, actor, p, "junit.import", m, h, func(tx pgx.Tx) (any, error) {
+		workID, err := r.boundRunInTx(ctx, tx, p.ID, rid)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.taskRunGuard(ctx, tx, actor, p, workID, workdomain.TaskReportTest); err != nil {
+			return nil, err
+		}
 		if filepath.Base(in.Filename) != in.Filename || strings.ContainsAny(in.Filename, "\\/") ||
 			strings.TrimSpace(in.Filename) == "" || !strings.HasSuffix(strings.ToLower(in.Filename), ".xml") {
 			return nil, domain.ErrValidation

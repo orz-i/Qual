@@ -64,6 +64,8 @@ type PageQuery struct {
 
 type Reader interface {
 	Page(ctx context.Context, project, item uuid.UUID, section Section, query PageQuery) ([]json.RawMessage, error)
+	TaskMode(context.Context, uuid.UUID) (workdomain.TaskAuthorizationMode, error)
+	AuthorizeTaskContextRead(context.Context, identity.Actor, identity.Project, uuid.UUID, Section) error
 }
 
 type WorkReader interface {
@@ -88,6 +90,8 @@ type Summary struct {
 	ID                 uuid.UUID           `json:"id"`
 	Key                string              `json:"key"`
 	Title              string              `json:"title"`
+	Description        string              `json:"description"`
+	AcceptanceCriteria []string            `json:"acceptance_criteria"`
 	Kind               workdomain.Kind     `json:"kind"`
 	Status             workdomain.Status   `json:"status"`
 	Priority           workdomain.Priority `json:"priority"`
@@ -111,6 +115,7 @@ type Page struct {
 	AvailableSections []Section               `json:"available_sections,omitempty"`
 	LatestReview      json.RawMessage         `json:"latest_review,omitempty"`
 	Acceptance        *work.AcceptanceHistory `json:"acceptance,omitempty"`
+	Capabilities      *work.TaskCapabilities  `json:"capabilities,omitempty"`
 }
 
 // A cursor only protects the page's WorkItem version and identity, not other
@@ -180,8 +185,29 @@ func (s Service) Get(ctx context.Context, actor identity.Actor, projectID, itemI
 	case Artifacts:
 		permission = permissions.ArtifactRead
 	}
-	if _, err := s.Identity.AuthorizeProject(ctx, actor, projectID, permission); err != nil {
+	mode, err := s.Reader.TaskMode(ctx, projectID)
+	if err != nil {
 		return Page{}, err
+	}
+	if mode == workdomain.TaskScopedAuthorization && actor.Type != permissions.Integration {
+		// Legacy work:read still permits basic task discovery, but its
+		// Context (Review, TestAttempt, Artifact, References and metadata)
+		// can expose sensitive per-task facts. No project-level TestRead
+		// or ArtifactRead Scope is a substitute for the current relation.
+		project, err := s.Identity.AuthorizeProject(ctx, actor, projectID, permissions.WorkRead)
+		if err != nil {
+			return Page{}, err
+		}
+		if _, err = s.Identity.AuthorizeProject(ctx, actor, projectID, permissions.WorkClaim); err != nil {
+			return Page{}, err
+		}
+		if err = s.Reader.AuthorizeTaskContextRead(ctx, actor, project, itemID, in.Section); err != nil {
+			return Page{}, err
+		}
+	} else {
+		if _, err := s.Identity.AuthorizeProject(ctx, actor, projectID, permission); err != nil {
+			return Page{}, err
+		}
 	}
 
 	offset := 0
@@ -208,11 +234,31 @@ func (s Service) Get(ctx context.Context, actor identity.Actor, projectID, itemI
 		SchemaVersion: 2, ContextRevision: item.Version, ProjectID: projectID,
 		GeneratedAt: now, Consistency: "best_effort",
 		WorkItem: Summary{ID: item.ID, Key: item.Key, Title: item.Title,
+			Description: item.Description, AcceptanceCriteria: append([]string{}, item.AcceptanceCriteria...),
 			Kind: item.Kind, Status: item.Status, Priority: item.Priority, Version: item.Version,
 			AssigneeID: item.AssigneeID, AccountableOwnerID: item.AccountableOwnerID},
 		Section: in.Section, Items: []json.RawMessage{}, HasMore: false, PagingLimited: false,
 	}
 	if in.Section == Overview {
+		// Optional additive projection: legacy integrations implementing the
+		// old WorkReader contract need no new interface. The production Work
+		// Service returns the same fields as the REST/CLI/MCP endpoint.
+		// Goose17 legacy projects still use the old WorkReader + REST/MCP
+		// contract; TaskCapabilities is a task-scoped-only projection.
+		// Calling an unconfigured TaskPolicy here would make existing clients
+		// fail even though their pre-existing project permissions are valid.
+		if provider, ok := s.Work.(interface {
+			Capabilities(context.Context, identity.Actor, uuid.UUID, uuid.UUID) (work.TaskCapabilities, error)
+		}); ok && mode == workdomain.TaskScopedAuthorization {
+			caps, err := provider.Capabilities(ctx, actor, projectID, itemID)
+			if err != nil {
+				return Page{}, err
+			}
+			if caps.WorkVersion != item.Version {
+				return Page{}, ErrStaleCursor
+			}
+			result.Capabilities = &caps
+		}
 		result.AvailableSections = append([]Section{}, sections...)
 		reviews, err := s.Reader.Page(ctx, projectID, itemID, Reviews, PageQuery{Limit: 1})
 		if err != nil {

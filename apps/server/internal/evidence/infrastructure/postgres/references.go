@@ -15,6 +15,9 @@ import (
 
 func (r Repository) AddReference(ctx context.Context, a identity.Actor, p identity.Project, in domain.ReferenceInput, m application.Meta, h [32]byte) (domain.Reference, error) {
 	body, err := r.idempotent(ctx, a, p, "external_reference.create", m, h, func(tx pgx.Tx) (any, error) {
+		if err := r.scopedReferenceWrite(ctx, tx, a, p, in.TargetKind, in.TargetID); err != nil {
+			return nil, err
+		}
 		if err := targetExists(ctx, tx, p.ID, in.TargetKind, in.TargetID); err != nil {
 			return nil, err
 		}

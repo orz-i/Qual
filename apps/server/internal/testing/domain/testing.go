@@ -93,9 +93,13 @@ type RunInput struct {
 	Environment    string      `json:"environment"`
 	BuildRef       string      `json:"build_ref"`
 	CaseVersionIDs []uuid.UUID `json:"case_version_ids"`
+	WorkItemID     *uuid.UUID  `json:"work_item_id,omitempty"`
 }
 
 func (r RunInput) Validate() error {
+	if r.WorkItemID != nil && *r.WorkItemID == uuid.Nil {
+		return ErrValidation
+	}
 	if strings.TrimSpace(r.Name) == "" || utf8.RuneCountInString(r.Name) > 240 || utf8.RuneCountInString(r.SourceSystem) > 80 ||
 		utf8.RuneCountInString(r.ExternalRunKey) > 240 || utf8.RuneCountInString(r.Environment) > 2000 ||
 		utf8.RuneCountInString(r.BuildRef) > 240 || len(r.CaseVersionIDs) == 0 || len(r.CaseVersionIDs) > 100 {
@@ -122,15 +126,16 @@ type RunItem struct {
 	AttemptCount   int           `json:"attempt_count"`
 }
 type TestRun struct {
-	ID             uuid.UUID `json:"id"`
-	ProjectID      uuid.UUID `json:"project_id"`
-	Name           string    `json:"name"`
-	SourceSystem   string    `json:"source_system"`
-	ExternalRunKey string    `json:"external_run_key,omitempty"`
-	Environment    string    `json:"environment"`
-	BuildRef       string    `json:"build_ref"`
-	CreatedAt      time.Time `json:"created_at"`
-	Items          []RunItem `json:"items"`
+	ID             uuid.UUID  `json:"id"`
+	ProjectID      uuid.UUID  `json:"project_id"`
+	WorkItemID     *uuid.UUID `json:"work_item_id,omitempty"`
+	Name           string     `json:"name"`
+	SourceSystem   string     `json:"source_system"`
+	ExternalRunKey string     `json:"external_run_key,omitempty"`
+	Environment    string     `json:"environment"`
+	BuildRef       string     `json:"build_ref"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Items          []RunItem  `json:"items"`
 }
 type ResultStatus string
 
